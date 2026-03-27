@@ -1,0 +1,13 @@
+{
+	"packageName":"documentation",
+	"files":[
+		"documentation.wl"
+	],
+	"directories":[
+		"documentation_info"
+	],
+	"excludePatterns":[
+		"documentation_info\/history\/",
+		"documentation_info\/references\/"
+	]
+}
