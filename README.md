@@ -1,6 +1,6 @@
 # documentation
 
-Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。
+Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。Markdown・LaTeX への（試験的）エクスポートおよびエクスポート対象外の Note スタイルセル挿入にも対応しています。
 
 ## 設計思想と実装の概要
 
@@ -143,6 +143,15 @@ ShowDocPalette[]
 - パラグラフ表示中 → 翻訳を再生成
 - 翻訳表示中 → 翻訳の編集内容をパラグラフに逆反映
 
+#### DocInsertNote[nb]
+現在のカーソル位置に **Note スタイル**のセルを挿入します。Note セルはノートブック上には通常のテキストとして表示されますが、**Markdown・LaTeX エクスポート時に本文から除外**されます。執筆中のメモ・TODO・コメントなど、最終出力に残したくない注釈を本文と混在させて置いておくのに適しています。ノートブックに `"Note"` スタイルが既に定義されている場合はそれを使用し、なければパッケージ組み込みのカスタムスタイルを適用します。
+
+#### DocExportMarkdown[nb] *(試験的)*
+ノートブックを Markdown 形式でエクスポートします。出力先は `NotebookDirectory[]/<ノートブック名>_md/` です。Note スタイルのセルは出力から除外されます。ラスター画像は PNG、ベクター画像・計算結果は PDF で保存されます。Input セルはコードブロック（` ```mathematica ``` `）、数式は TeX 形式に変換されます。
+
+#### DocExportLaTeX[nb] *(試験的)*
+ノートブックを LaTeX 形式でエクスポートします。出力先は `NotebookDirectory[]/<ノートブック名>_LaTeX/` です。Note スタイルのセルは出力から除外されます。画像処理・数式変換の方針は Markdown エクスポートと同じです。Input セルは `lstlisting` 環境として出力されます。
+
 #### ShowDocPalette[]
 ドキュメント作成用フローティングパレットを表示します。パッケージロード時に自動表示されますが、閉じた場合はこの関数で再表示できます。メニュー「パレット」→「Documentation」からも起動できます。
 
@@ -154,9 +163,12 @@ ShowDocPalette[]
 | ↔ 切替 | 選択セルのアイデア / パラグラフ / 翻訳を循環切替 |
 | » 翻訳 | 選択セルを翻訳（複数選択時は逐次処理） |
 | ⇌ 同期 | 選択セルの各コンポーネントを同期 |
+| ■ メモ | カーソル位置に Note スタイルセルを挿入（エクスポート対象外） |
 | … 全プロンプト | ノートブック全体をアイデア表示に一括切替 |
 | ¶ 全パラグラフ | ノートブック全体をパラグラフ表示に一括切替 |
 | Â 全翻訳 | ノートブック全体を翻訳表示に一括切替 |
+| → Markdown | ノートブックを Markdown 形式でエクスポート（試験的） |
+| → LaTeX | ノートブックを LaTeX 形式でエクスポート（試験的） |
 
 #### $DocTranslationLanguage
 翻訳先言語名を指定するグローバル変数です。デフォルトは `$Language` が英語以外なら `"English"`、英語なら `"Japanese"` です。任意の言語名（`"French"`, `"German"`, `"Spanish"` 等）を設定できます。
@@ -165,8 +177,8 @@ ShowDocPalette[]
 
 | ファイル | 内容 |
 |----------|------|
-| `api.md` | 全公開関数・変数のリファレンス、セルモードと TaggingRules 構造の詳細 |
-| `user_manual.md` | ユーザーマニュアル、パレット操作ガイド、各関数の引数説明 |
+| `api.md` | 全公開関数・変数のリファレンス、セルモードと TaggingRules 構造、エクスポートセルスタイルマッピングの詳細 |
+| `user_manual.md` | ユーザーマニュアル、パレット操作ガイド、各関数の引数説明、典型的なワークフロー |
 | `example.md` | コード例集（パレット起動、展開、切替、翻訳設定、複数セル操作） |
 | `setup.md` | インストール手順、動作要件、トラブルシューティング |
 
@@ -221,6 +233,27 @@ DocSync[EvaluationNotebook[], 4]
 
 ```mathematica
 DocExpandIdea[EvaluationNotebook[], 5, Fallback -> True]
+```
+
+### Note セルを挿入する
+
+```mathematica
+(* カーソル位置にエクスポート対象外のメモセルを挿入する *)
+DocInsertNote[EvaluationNotebook[]]
+```
+
+### ノートブックを Markdown にエクスポートする（試験的）
+
+```mathematica
+(* Note セルを除いた本文を Markdown として出力する *)
+DocExportMarkdown[EvaluationNotebook[]]
+```
+
+### ノートブックを LaTeX にエクスポートする（試験的）
+
+```mathematica
+(* Note セルを除いた本文を LaTeX として出力する *)
+DocExportLaTeX[EvaluationNotebook[]]
 ```
 
 ---

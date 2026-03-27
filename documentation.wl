@@ -1,93 +1,109 @@
-(* ::Package:: *)
-
 (* documentation.wl -- Documentation Authoring Package
    This file is encoded in UTF-8.
    Load via: Block[{$CharacterEncoding = "UTF-8"}, Get["documentation.wl"]]
 
-   \:30a2\:30a6\:30c8\:30e9\:30a4\:30f3\:30d7\:30ed\:30bb\:30c3\:30b5\:62e1\:5f35: \:30a2\:30a4\:30c7\:30a2 \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:5c55\:958b\:30b7\:30b9\:30c6\:30e0\:3002
+   アウトラインプロセッサ拡張: アイデア → パラグラフ展開システム。
 
-   \:898f\:7d04:
-   - \:30bb\:30eb\:5185\:5bb9\:3078\:306e\:30a2\:30af\:30bb\:30b9\:306f\:3059\:3079\:3066 NBAccess` \:306e\:516c\:958b\:95a2\:6570\:7d4c\:7531\:3067\:884c\:3046\:3002
-   - LLM \:547c\:3073\:51fa\:3057\:306f NBAccess`NBCellTransformWithLLM \:7d4c\:7531\:3067\:884c\:3046\:3002
-     (\:30d7\:30e9\:30a4\:30d0\:30b7\:30fc\:30ec\:30d9\:30eb\:306b\:5fdc\:3058\:305f LLM \:81ea\:52d5\:9078\:629e\:306fNBAccess\:304c\:62c5\:5f53)
-   - \:30d1\:30ec\:30c3\:30c8 UI \:306e\:305f\:3081\:306e\:30ce\:30fc\:30c8\:30d6\:30c3\:30af/\:30bb\:30eb\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:89e3\:6c7a\:306e\:307f\:5185\:90e8\:3067\:884c\:3046\:3002
+   規約:
+   - セル内容へのアクセスはすべて NBAccess` の公開関数経由で行う。
+   - LLM 呼び出しは NBAccess`NBCellTransformWithLLM 経由で行う。
+     (プライバシーレベルに応じた LLM 自動選択はNBAccessが担当)
+   - パレット UI のためのノートブック/セルインデックス解決のみ内部で行う。
 
-   \:4f9d\:5b58: NBAccess` (\:30bb\:30eb\:30a2\:30af\:30bb\:30b9\:30fbLLM \:30eb\:30fc\:30c6\:30a3\:30f3\:30b0), ClaudeCode` (LLM \:30b3\:30fc\:30eb\:30d0\:30c3\:30af)
-
+   依存: NBAccess` (セルアクセス・LLM ルーティング), ClaudeCode` (LLM コールバック)
 *)
 
 BeginPackage["Documentation`"];
 
-(* ---- \:4f9d\:5b58\:30d1\:30c3\:30b1\:30fc\:30b8 ---- *)
+(* ---- 依存パッケージ ---- *)
 Needs["NBAccess`"];
 Needs["ClaudeCode`"];
 
-(* ---- \:516c\:958bAPI ---- *)
+(* ---- 公開API ---- *)
 
 DocExpandIdea::usage =
-  "DocExpandIdea[nb, cellIdx] \:306f\:6307\:5b9a\:30bb\:30eb\:306e\:30a2\:30a4\:30c7\:30a2\:30c6\:30ad\:30b9\:30c8\:3092\n" <>
-  "LLM \:3092\:4f7f\:3063\:3066\:6587\:7ae0\:54c1\:8cea\:306e\:30d1\:30e9\:30b0\:30e9\:30d5\:306b\:5c55\:958b\:3059\:308b\:3002\n" <>
-  "\:5143\:306e\:30a2\:30a4\:30c7\:30a2\:306f\:30bb\:30eb\:306e TaggingRules \:306b\:4fdd\:5b58\:3055\:308c\:308b\:3002\n" <>
-  "\:65e2\:306b\:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d\:306e\:5834\:5408\:306f\:4fdd\:5b58\:6e08\:307f\:30a2\:30a4\:30c7\:30a2\:304b\:3089\:518d\:5c55\:958b\:3059\:308b\:3002\n" <>
+  "DocExpandIdea[nb, cellIdx] は指定セルのアイデアテキストを\n" <>
+  "LLM を使って文章品質のパラグラフに展開する。\n" <>
+  "元のアイデアはセルの TaggingRules に保存される。\n" <>
+  "既にパラグラフ表示中の場合は保存済みアイデアから再展開する。\n" <>
   "Options: Fallback -> False\n" <>
-  "\:4f8b: DocExpandIdea[EvaluationNotebook[], 3]";
+  "例: DocExpandIdea[EvaluationNotebook[], 3]";
 
 DocToggleView::usage =
-  "DocToggleView[nb, cellIdx] \:306f\:30bb\:30eb\:306e\:30a2\:30a4\:30c7\:30a2\:3068\:30d1\:30e9\:30b0\:30e9\:30d5\:306e\:8868\:793a\:3092\:5207\:308a\:66ff\:3048\:308b\:3002\n" <>
-  "\:73fe\:5728\:8868\:793a\:4e2d\:306e\:5185\:5bb9\:ff08\:7de8\:96c6\:6e08\:307f\:3067\:3082\:ff09\:3092\:4fdd\:5b58\:3057\:3066\:304b\:3089\:5207\:308a\:66ff\:3048\:308b\:3002\n" <>
-  "\:4f8b: DocToggleView[EvaluationNotebook[], 5]";
+  "DocToggleView[nb, cellIdx] はセルのアイデアとパラグラフの表示を切り替える。\n" <>
+  "現在表示中の内容（編集済みでも）を保存してから切り替える。\n" <>
+  "例: DocToggleView[EvaluationNotebook[], 5]";
 
+
+DocInsertNote::usage =
+  "DocInsertNote[nb] は現在のカーソル位置に Note スタイルのセルを挿入する。\n" <>
+  "既にスタイル \"Note\" が定義されている場合はそれを使い、\n" <>
+  "なければカスタム定義のNoteセルを挿入する。";
+
+DocExportMarkdown::usage =
+  "DocExportMarkdown[nb] はノートブックを Markdown 形式でエクスポートする。\n" <>
+  "出力先: NotebookDirectory[] / <ノートブック名>_md/\n" <>
+  "Note スタイルのセルは出力から除外される。\n" <>
+  "画像: ラスター→PNG, ベクター/計算結果→PDF で保存。\n" <>
+  "Input セルはコードブロック、数式は TeX に変換される。";
+
+DocExportLaTeX::usage =
+  "DocExportLaTeX[nb] はノートブックを LaTeX 形式でエクスポートする。\n" <>
+  "出力先: NotebookDirectory[] / <ノートブック名>_LaTeX/\n" <>
+  "Note スタイルのセルは出力から除外される。\n" <>
+  "画像: ラスター→PNG, ベクター/計算結果→PDF で保存。\n" <>
+  "Input セルはコードブロック、数式は TeX に変換される。";
 
 ShowDocPalette::usage =
-  "ShowDocPalette[] \:306f\:30c9\:30ad\:30e5\:30e1\:30f3\:30c8\:4f5c\:6210\:7528\:30d1\:30ec\:30c3\:30c8\:3092\:8868\:793a\:3059\:308b\:3002";
+  "ShowDocPalette[] はドキュメント作成用パレットを表示する。";
 
 $DocTranslationLanguage::usage =
-  "$DocTranslationLanguage \:306f\:7ffb\:8a33\:5148\:306e\:8a00\:8a9e\:540d\:3002\n" <>
-  "\:30c7\:30d5\:30a9\:30eb\:30c8: $Language \:304c\:82f1\:8a9e\:4ee5\:5916\:306a\:3089 \"English\"\:3001\:82f1\:8a9e\:306a\:3089 \"Japanese\"\:3002\n" <>
-  "\:30e6\:30fc\:30b6\:30fc\:304c\:4efb\:610f\:306e\:8a00\:8a9e\:540d\:306b\:5909\:66f4\:53ef\:80fd\:3002\n" <>
-  "\:4f8b: $DocTranslationLanguage = \"French\"";
+  "$DocTranslationLanguage は翻訳先の言語名。\n" <>
+  "デフォルト: $Language が英語以外なら \"English\"、英語なら \"Japanese\"。\n" <>
+  "ユーザーが任意の言語名に変更可能。\n" <>
+  "例: $DocTranslationLanguage = \"French\"";
 
 Begin["`Private`"];
 
 (* ============================================================
-   \:30ed\:30fc\:30ab\:30ea\:30bc\:30fc\:30b7\:30e7\:30f3
+   ローカリゼーション
    ============================================================ *)
 iL[ja_String, en_String] := If[$Language === "Japanese", ja, en];
 
 (* ============================================================
-   \:5b9a\:6570: \:8996\:899a\:30b9\:30bf\:30a4\:30eb
+   定数: 視覚スタイル
    ============================================================ *)
 
-(* \:5c55\:958b\:306e\:8996\:899a\:8868\:73fe: \:5de6\:5074\:67a0\:7dda\:306e\:307f\:5236\:5fa1\:3002
-   Background \:3068 CellDingbat \:306f\:6a5f\:5bc6\:30b7\:30b9\:30c6\:30e0 (NBAccess) \:306e\:7ba1\:8f44\:3067\:3042\:308a\:3001
-   documentation \:5074\:3067\:306f\:4e00\:5207\:89e6\:3089\:306a\:3044\:3002\:3053\:308c\:306b\:3088\:308a\:6a5f\:5bc6\:80cc\:666f\:8272\:304c\:4fdd\:6301\:3055\:308c\:308b\:3002 *)
+(* 展開の視覚表現: 左側枠線のみ制御。
+   Background と CellDingbat は機密システム (NBAccess) の管轄であり、
+   documentation 側では一切触らない。これにより機密背景色が保持される。 *)
 
-(* \:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:30e2\:30fc\:30c9: \:5de6\:5074\:306b\:7dd1\:306e\:67a0\:7dda *)
+(* パラグラフ表示モード: 左側に緑の枠線 *)
 $iDocParagraphCellOpts = {
   CellFrame      -> {{3, 0}, {0, 0}},
   CellFrameColor -> RGBColor[0.3, 0.6, 0.5]
 };
 
-(* \:30a2\:30a4\:30c7\:30a2\:8868\:793a\:30e2\:30fc\:30c9: \:5de6\:5074\:306b\:7425\:73c0\:8272\:306e\:67a0\:7dda *)
+(* アイデア表示モード: 左側に琥珀色の枠線 *)
 $iDocIdeaCellOpts = {
   CellFrame      -> {{3, 0}, {0, 0}},
   CellFrameColor -> RGBColor[0.8, 0.65, 0.3]
 };
 
-(* \:7ffb\:8a33\:8868\:793a\:30e2\:30fc\:30c9: \:5de6\:5074\:306b\:9752\:306e\:67a0\:7dda *)
+(* 翻訳表示モード: 左側に青の枠線 *)
 $iDocTranslationCellOpts = {
   CellFrame      -> {{3, 0}, {0, 0}},
   CellFrameColor -> RGBColor[0.3, 0.45, 0.75]
 };
 
-(* \:7ffb\:8a33\:4ed8\:304d\:30bb\:30eb\:ff08\:5143\:30c6\:30ad\:30b9\:30c8\:8868\:793a\:4e2d\:ff09: \:5de6\:5074\:306b\:6c34\:8272\:306e\:67a0\:7dda *)
+(* 翻訳付きセル（元テキスト表示中）: 左側に水色の枠線 *)
 $iDocTranslatedCellOpts = {
   CellFrame      -> {{3, 0}, {0, 0}},
   CellFrameColor -> RGBColor[0.5, 0.75, 0.9]
 };
 
 (* ============================================================
-   TaggingRules \:30d1\:30b9\:5b9a\:6570
+   TaggingRules パス定数
    ============================================================ *)
 $iDocTagRoot = "documentation";
 $iDocTagAlternate = {$iDocTagRoot, "alternate"};
@@ -97,19 +113,19 @@ $iDocTagTranslationSrc = {$iDocTagRoot, "translationSrc"};
 $iDocTagShowTranslation = {$iDocTagRoot, "showTranslation"};
 
 (* ============================================================
-   \:30d1\:30ec\:30c3\:30c8\:72b6\:614b
+   パレット状態
    ============================================================ *)
 If[!ValueQ[$docPalette], $docPalette = None];
-(* \:76f4\:524d\:306e\:64cd\:4f5c\:5bfe\:8c61\:30bb\:30eb\:8a18\:61b6: {nb, cellIdx}
-   \:30bb\:30eb\:9078\:629e\:304c\:89e3\:9664\:3055\:308c\:3066\:3082\:3001\:540c\:3058\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:4e0a\:306a\:3089\:76f4\:524d\:306e\:30bb\:30eb\:3092\:518d\:5229\:7528\:3059\:308b\:3002
-   \:5225\:30bb\:30eb\:306e\:9078\:629e\:3001\:5225\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:3078\:306e\:5207\:66ff\:3067\:30af\:30ea\:30a2\:3055\:308c\:308b\:3002 *)
+(* 直前の操作対象セル記憶: {nb, cellIdx}
+   セル選択が解除されても、同じノートブック上なら直前のセルを再利用する。
+   別セルの選択、別ノートブックへの切替でクリアされる。 *)
 $iDocLastTarget = {None, 0};
 
 (* ============================================================
-   \:30d1\:30ec\:30c3\:30c8\:7528: \:30ce\:30fc\:30c8\:30d6\:30c3\:30af/\:30bb\:30eb\:89e3\:6c7a (UI \:30e1\:30bf\:30c7\:30fc\:30bf\:306e\:307f\:3001\:5185\:5bb9\:975e\:63a5\:89e6)
+   パレット用: ノートブック/セル解決 (UI メタデータのみ、内容非接触)
    ============================================================ *)
 
-(* \:30d1\:30ec\:30c3\:30c8\:304b\:3089\:547c\:3070\:308c\:3066\:3082\:6b63\:3057\:3044\:30e6\:30fc\:30b6\:30fc\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:3092\:8fd4\:3059 *)
+(* パレットから呼ばれても正しいユーザーノートブックを返す *)
 iDocUserNotebook[] :=
   Module[{nb = Quiet[InputNotebook[]], nbs},
     If[Head[nb] === NotebookObject &&
@@ -122,10 +138,10 @@ iDocUserNotebook[] :=
     If[Length[nbs] > 0, First[nbs], nb]
   ];
 
-(* \:64cd\:4f5c\:5bfe\:8c61\:30bb\:30eb\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:30921\:3064\:89e3\:6c7a\:3059\:308b\:3002
-   \:30bb\:30eb\:30d6\:30e9\:30b1\:30c3\:30c8\:9078\:629e\:304c\:3042\:308c\:3070\:305d\:308c\:3092\:4f7f\:3044\:8a18\:61b6\:3059\:308b\:3002
-   \:9078\:629e\:304c\:306a\:3044\:5834\:5408\:3001\:540c\:3058\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:4e0a\:306e\:76f4\:524d\:64cd\:4f5c\:30bb\:30eb\:3092\:518d\:5229\:7528\:3059\:308b\:3002
-   \:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:304c\:5909\:308f\:3063\:305f\:3089\:8a18\:61b6\:3092\:30af\:30ea\:30a2\:3059\:308b\:3002 *)
+(* 操作対象セルインデックスを1つ解決する。
+   セルブラケット選択があればそれを使い記憶する。
+   選択がない場合、同じノートブック上の直前操作セルを再利用する。
+   ノートブックが変わったら記憶をクリアする。 *)
 iDocResolveTargetCell[] :=
   Module[{nb, idxs},
     nb = iDocUserNotebook[];
@@ -143,10 +159,10 @@ iDocResolveTargetCell[] :=
     ]
   ];
 
-(* \:64cd\:4f5c\:5bfe\:8c61\:30bb\:30eb\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:3092\:8907\:6570\:89e3\:6c7a\:3059\:308b\:ff08\:30bb\:30eb\:30b0\:30eb\:30fc\:30d7\:9078\:629e\:5bfe\:5fdc\:ff09\:3002
-   \:8907\:6570\:9078\:629e: \:305d\:306e\:307e\:307e\:5168\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:3092\:8fd4\:3059\:3002
-   \:5358\:4e00\:9078\:629e or \:30ab\:30fc\:30bd\:30eb\:4f4d\:7f6e: 1\:8981\:7d20\:30ea\:30b9\:30c8\:3068\:3057\:3066\:8fd4\:3059\:3002
-   \:9078\:629e\:306a\:3057: \:76f4\:524d\:64cd\:4f5c\:30bb\:30eb\:3092\:518d\:5229\:7528\:3002 *)
+(* 操作対象セルインデックスを複数解決する（セルグループ選択対応）。
+   複数選択: そのまま全インデックスを返す。
+   単一選択 or カーソル位置: 1要素リストとして返す。
+   選択なし: 直前操作セルを再利用。 *)
 iDocResolveTargetCells[] :=
   Module[{nb, idxs},
     nb = iDocUserNotebook[];
@@ -165,10 +181,10 @@ iDocResolveTargetCells[] :=
   ];
 
 (* ============================================================
-   \:8a00\:8a9e\:30d8\:30eb\:30d1\:30fc
+   言語ヘルパー
    ============================================================ *)
 
-(* $Language \:306b\:57fa\:3065\:304f\:51fa\:529b\:8a00\:8a9e\:540d\:3002\:5c55\:958b\:30d7\:30ed\:30f3\:30d7\:30c8\:3067\:4f7f\:7528\:3002 *)
+(* $Language に基づく出力言語名。展開プロンプトで使用。 *)
 iDocOutputLanguage[] := Module[{lang},
   lang = If[StringQ[$Language], $Language, "Japanese"];
   Switch[lang,
@@ -183,19 +199,19 @@ iDocOutputLanguage[] := Module[{lang},
     _, lang]
 ];
 
-(* \:7ffb\:8a33\:5148\:8a00\:8a9e\:306e\:521d\:671f\:5316: $Language \:304c\:82f1\:8a9e\:4ee5\:5916\:306a\:3089\:82f1\:8a9e\:306b\:3001\:82f1\:8a9e\:306a\:3089\:65e5\:672c\:8a9e\:306b *)
+(* 翻訳先言語の初期化: $Language が英語以外なら英語に、英語なら日本語に *)
 If[!StringQ[$DocTranslationLanguage],
   $DocTranslationLanguage = If[StringQ[$Language] && $Language === "English",
     "Japanese", "English"]];
 
-(* \:7ffb\:8a33\:5148\:8a00\:8a9e\:3092\:8fd4\:3059\:ff08\:5927\:57df\:5909\:6570\:7d4c\:7531\:ff09 *)
+(* 翻訳先言語を返す（大域変数経由） *)
 iDocTranslationTarget[] := $DocTranslationLanguage;
 
-(* \:30c6\:30ad\:30b9\:30c8\:306e\:8a00\:8a9e\:3092\:30d2\:30e5\:30fc\:30ea\:30b9\:30c6\:30a3\:30c3\:30af\:3067\:691c\:51fa\:3059\:308b\:3002
-   \:3072\:3089\:304c\:306a\:30fb\:30ab\:30bf\:30ab\:30ca \[RightArrow] "Japanese"
-   \:30cf\:30f3\:30b0\:30eb \[RightArrow] "Korean"
-   CJK\:7d71\:5408\:6f22\:5b57\:306e\:307f\:ff08\:304b\:306a\:7121\:3057\:ff09\[RightArrow] "Chinese"
-   \:305d\:308c\:4ee5\:5916 \[RightArrow] "English" \:ff08\:30e9\:30c6\:30f3\:6587\:5b57\:7cfb\:3092\:4e00\:62ec\:ff09 *)
+(* テキストの言語をヒューリスティックで検出する。
+   ひらがな・カタカナ → "Japanese"
+   ハングル → "Korean"
+   CJK統合漢字のみ（かな無し）→ "Chinese"
+   それ以外 → "English" （ラテン文字系を一括） *)
 iDocDetectTextLanguage[text_String] := Module[{sample},
   sample = StringTake[text, Min[500, StringLength[text]]];
   Which[
@@ -213,7 +229,7 @@ iDocDetectTextLanguage[text_String] := Module[{sample},
   ]
 ];
 
-(* $Language \:3092\:691c\:51fa\:8a00\:8a9e\:3068\:6bd4\:8f03\:53ef\:80fd\:306a\:5f62\:5f0f\:306b\:5909\:63db *)
+(* $Language を検出言語と比較可能な形式に変換 *)
 iDocLangCategory[lang_String] := Switch[lang,
   "Japanese", "Japanese",
   "English", "English",
@@ -223,31 +239,31 @@ iDocLangCategory[lang_String] := Switch[lang,
   _, "Other"
 ];
 
-(* \:666e\:901a\:306e\:30bb\:30eb\:7528: \:30c6\:30ad\:30b9\:30c8\:8a00\:8a9e\:3092\:691c\:51fa\:3057\:3066\:7ffb\:8a33\:5148\:3092\:6c7a\:5b9a\:3059\:308b\:3002
-   \:30c6\:30ad\:30b9\:30c8\:306e\:8a00\:8a9e\:304c $Language \:3068\:7570\:306a\:308b \[RightArrow] $Language \:306b\:7ffb\:8a33
-   \:30c6\:30ad\:30b9\:30c8\:306e\:8a00\:8a9e\:304c $Language \:3068\:540c\:3058 \[RightArrow] iDocTranslationTarget[] *)
+(* 普通のセル用: テキスト言語を検出して翻訳先を決定する。
+   テキストの言語が $Language と異なる → $Language に翻訳
+   テキストの言語が $Language と同じ → iDocTranslationTarget[] *)
 iDocTranslationTargetForText[text_String] := Module[{detected, myLang},
   detected = iDocDetectTextLanguage[text];
   myLang = iDocLangCategory[If[StringQ[$Language], $Language, "Japanese"]];
   If[detected =!= myLang,
-    (* \:30c6\:30ad\:30b9\:30c8\:306e\:8a00\:8a9e\:304c $Language \:3068\:7570\:306a\:308b \[RightArrow] $Language \:306b\:7ffb\:8a33 *)
+    (* テキストの言語が $Language と異なる → $Language に翻訳 *)
     iDocOutputLanguage[],
-    (* \:540c\:3058 \[RightArrow] \:5225\:306e\:8a00\:8a9e\:306b\:7ffb\:8a33 *)
+    (* 同じ → 別の言語に翻訳 *)
     iDocTranslationTarget[]]
 ];
 
 (* ============================================================
-   LLM \:30d7\:30ed\:30f3\:30d7\:30c8\:69cb\:7bc9\:95a2\:6570 (NBCellTransformWithLLM \:306e promptFn \:3068\:3057\:3066\:4f7f\:3046)
+   LLM プロンプト構築関数 (NBCellTransformWithLLM の promptFn として使う)
    ============================================================ *)
 
-(* \:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:306e\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:60c5\:5831\:3092\:53ce\:96c6\:3059\:308b\:3002
-   \:5bfe\:8c61\:30bb\:30eb\:306e\:5468\:8fba\:30bb\:30eb\:30c6\:30ad\:30b9\:30c8\:3068\:30a2\:30bf\:30c3\:30c1\:30e1\:30f3\:30c8\:60c5\:5831\:3092\:542b\:3080\:3002
-   LLM \:304c\:30a2\:30a4\:30c7\:30a2\:4e2d\:306e\:7565\:8a9e\:30fb\:56fa\:6709\:540d\:8a5e\:3092\:6b63\:3057\:304f\:89e3\:91c8\:3059\:308b\:305f\:3081\:306b\:4f7f\:3046\:3002 *)
+(* ノートブックのコンテキスト情報を収集する。
+   対象セルの周辺セルテキストとアタッチメント情報を含む。
+   LLM がアイデア中の略語・固有名詞を正しく解釈するために使う。 *)
 iDocCollectContext[nb_NotebookObject, cellIdx_Integer] :=
   Module[{nCells, texts = {}, mode, text, style, atts, attNames, maxCells = 30},
     NBAccess`NBInvalidateCellsCache[nb];
     nCells = NBAccess`NBCellCount[nb];
-    (* \:5468\:8fba\:30bb\:30eb\:306e\:8981\:7d04\:3092\:53ce\:96c6\:ff08\:81ea\:5206\:81ea\:8eab\:3092\:9664\:304f\:3001\:6700\:5927 maxCells \:30bb\:30eb\:ff09 *)
+    (* 周辺セルの要約を収集（自分自身を除く、最大 maxCells セル） *)
     Do[
       If[i =!= cellIdx,
         style = NBAccess`NBCellStyle[nb, i];
@@ -255,7 +271,7 @@ iDocCollectContext[nb_NotebookObject, cellIdx_Integer] :=
                      "Subtitle", "Chapter"}, style],
           text = Quiet[NBAccess`NBCellGetText[nb, i]];
           If[StringQ[text] && StringLength[text] > 0,
-            (* \:9577\:3059\:304e\:308b\:30bb\:30eb\:306f\:5148\:982d200\:6587\:5b57\:306b\:5207\:308a\:8a70\:3081 *)
+            (* 長すぎるセルは先頭200文字に切り詰め *)
             text = If[StringLength[text] > 200,
               StringTake[text, 200] <> "...", text];
             mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
@@ -264,12 +280,12 @@ iDocCollectContext[nb_NotebookObject, cellIdx_Integer] :=
               If[StringQ[mode], " (" <> mode <> ")", ""] <>
               "] " <> text]]]],
     {i, Max[1, cellIdx - maxCells], Min[nCells, cellIdx + maxCells]}];
-    (* \:30a2\:30bf\:30c3\:30c1\:30e1\:30f3\:30c8\:60c5\:5831: NBAccess \:516c\:958b API \:7d4c\:7531 *)
+    (* アタッチメント情報: NBAccess 公開 API 経由 *)
     atts = Quiet[NBAccess`NBHistoryGetAttachments[nb, "history"]];
     attNames = If[ListQ[atts] && Length[atts] > 0,
       "Attached files: " <> StringRiffle[FileNameTake /@ atts, ", "],
       ""];
-    (* \:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:6587\:5b57\:5217\:3092\:69cb\:7bc9 *)
+    (* コンテキスト文字列を構築 *)
     If[Length[texts] === 0 && attNames === "", "",
       "=== Document context (use this to disambiguate terms) ===\n" <>
       If[attNames =!= "", attNames <> "\n", ""] <>
@@ -281,17 +297,17 @@ iDocCollectContext[nb_NotebookObject, cellIdx_Integer] :=
 iDocExpandPromptFn[ideaText_String, context_String:""] :=
   context <>
   iL[
-    "\:3042\:306a\:305f\:306f\:719f\:7df4\:3057\:305f\:30e9\:30a4\:30bf\:30fc\:3067\:3059\:3002\:4ee5\:4e0b\:306e\:77ed\:3044\:30a2\:30a4\:30c7\:30a2\:3084\:30d5\:30ec\:30fc\:30ba\:3092\:3001" <>
-    "\:3088\:304f\:7df4\:3089\:308c\:305f\:6bb5\:843d\:306b\:767a\:5c55\:3055\:305b\:3066\:304f\:3060\:3055\:3044\:3002\n" <>
-    "\:30eb\:30fc\:30eb:\n" <>
-    "- \:5143\:306e\:610f\:5473\:3068\:610f\:56f3\:3092\:5fe0\:5b9f\:306b\:4fdd\:3064\n" <>
-    "- \:6df1\:307f\:3001\:660e\:78ba\:3055\:3001\:30d7\:30ed\:30d5\:30a7\:30c3\:30b7\:30e7\:30ca\:30eb\:306a\:6587\:7ae0\:54c1\:8cea\:3092\:52a0\:3048\:308b\n" <>
-    "- \:51fa\:529b\:8a00\:8a9e: " <> iDocOutputLanguage[] <> "\n" <>
-    "- \:6bb5\:843d\:306e\:30c6\:30ad\:30b9\:30c8\:306e\:307f\:3092\:51fa\:529b\:3057\:3001\:305d\:308c\:4ee5\:5916\:ff08\:524d\:7f6e\:304d\:3084\:8aac\:660e\:ff09\:306f\:4e00\:5207\:51fa\:529b\:3057\:306a\:3044\n" <>
-    "- \:30de\:30fc\:30af\:30c0\:30a6\:30f3\:8a18\:6cd5\:306f\:4f7f\:308f\:306a\:3044\n" <>
-    "- \:30c9\:30ad\:30e5\:30e1\:30f3\:30c8\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:304c\:3042\:308b\:5834\:5408\:306f\:3001\:7565\:8a9e\:3084\:56fa\:6709\:540d\:8a5e\:306e\:610f\:5473\:3092\:6587\:8108\:304b\:3089\:5224\:65ad\:3059\:308b\n" <>
-    "- \:30ea\:30af\:30a8\:30b9\:30c8\:3092\:5b9f\:884c\:3067\:304d\:306a\:3044\:5834\:5408\:ff08\:30d5\:30a1\:30a4\:30eb\:672a\:691c\:51fa\:30fb\:60c5\:5831\:4e0d\:8db3\:7b49\:ff09\:306f\:3001\:6bb5\:843d\:3067\:306f\:306a\:304f [ERROR]: \:306b\:7d9a\:3051\:3066\:7406\:7531\:3092\:51fa\:529b\:3059\:308b\n\n" <>
-    "\:30a2\:30a4\:30c7\:30a2:\n" <> ideaText,
+    "あなたは熟練したライターです。以下の短いアイデアやフレーズを、" <>
+    "よく練られた段落に発展させてください。\n" <>
+    "ルール:\n" <>
+    "- 元の意味と意図を忠実に保つ\n" <>
+    "- 深み、明確さ、プロフェッショナルな文章品質を加える\n" <>
+    "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
+    "- 段落のテキストのみを出力し、それ以外（前置きや説明）は一切出力しない\n" <>
+    "- マークダウン記法は使わない\n" <>
+    "- ドキュメントコンテキストがある場合は、略語や固有名詞の意味を文脈から判断する\n" <>
+    "- リクエストを実行できない場合（ファイル未検出・情報不足等）は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
+    "アイデア:\n" <> ideaText,
     "You are a skilled writer. Develop the following brief idea or phrase " <>
     "into a well-crafted paragraph.\n" <>
     "Rules:\n" <>
@@ -305,22 +321,22 @@ iDocExpandPromptFn[ideaText_String, context_String:""] :=
     "Idea:\n" <> ideaText
   ];
 
-(* \:518d\:5c55\:958b\:7528\:30d7\:30ed\:30f3\:30d7\:30c8: \:4fee\:6b63\:3055\:308c\:305f\:30a2\:30a4\:30c7\:30a2\:3068\:4ee5\:524d\:306e\:30d1\:30e9\:30b0\:30e9\:30d5\:306e\:4e21\:65b9\:3092\:6e21\:3059 *)
+(* 再展開用プロンプト: 修正されたアイデアと以前のパラグラフの両方を渡す *)
 iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :=
   context <>
   iL[
-    "\:3042\:306a\:305f\:306f\:719f\:7df4\:3057\:305f\:30e9\:30a4\:30bf\:30fc\:3067\:3059\:3002\:4ee5\:4e0b\:306e\:300c\:4fee\:6b63\:3055\:308c\:305f\:30a2\:30a4\:30c7\:30a2\:300d\:306b\:57fa\:3065\:3044\:3066\:3001" <>
-    "\:300c\:4ee5\:524d\:306e\:6bb5\:843d\:300d\:3092\:66f8\:304d\:76f4\:3057\:3066\:304f\:3060\:3055\:3044\:3002\n" <>
-    "\:30eb\:30fc\:30eb:\n" <>
-    "- \:4ee5\:524d\:306e\:6bb5\:843d\:306e\:6587\:4f53\:30fb\:69cb\:6210\:30fb\:30e6\:30fc\:30b6\:30fc\:306e\:4fee\:6b63\:3092\:53ef\:80fd\:306a\:9650\:308a\:8e0f\:8972\:3059\:308b\n" <>
-    "- \:4fee\:6b63\:3055\:308c\:305f\:30a2\:30a4\:30c7\:30a2\:306e\:5185\:5bb9\:5909\:66f4\:306b\:5f93\:3063\:3066\:5fc5\:8981\:7b87\:6240\:3092\:66f8\:304d\:63db\:3048\:308b\n" <>
-    "- \:51fa\:529b\:8a00\:8a9e: " <> iDocOutputLanguage[] <> "\n" <>
-    "- \:6bb5\:843d\:306e\:30c6\:30ad\:30b9\:30c8\:306e\:307f\:3092\:51fa\:529b\:3057\:3001\:305d\:308c\:4ee5\:5916\:ff08\:524d\:7f6e\:304d\:3084\:8aac\:660e\:ff09\:306f\:4e00\:5207\:51fa\:529b\:3057\:306a\:3044\n" <>
-    "- \:30de\:30fc\:30af\:30c0\:30a6\:30f3\:8a18\:6cd5\:306f\:4f7f\:308f\:306a\:3044\n" <>
-    "- \:30c9\:30ad\:30e5\:30e1\:30f3\:30c8\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:304c\:3042\:308b\:5834\:5408\:306f\:3001\:7565\:8a9e\:3084\:56fa\:6709\:540d\:8a5e\:306e\:610f\:5473\:3092\:6587\:8108\:304b\:3089\:5224\:65ad\:3059\:308b\n" <>
-    "- \:30ea\:30af\:30a8\:30b9\:30c8\:3092\:5b9f\:884c\:3067\:304d\:306a\:3044\:5834\:5408\:ff08\:30d5\:30a1\:30a4\:30eb\:672a\:691c\:51fa\:30fb\:60c5\:5831\:4e0d\:8db3\:7b49\:ff09\:306f\:3001\:6bb5\:843d\:3067\:306f\:306a\:304f [ERROR]: \:306b\:7d9a\:3051\:3066\:7406\:7531\:3092\:51fa\:529b\:3059\:308b\n\n" <>
-    "\:4fee\:6b63\:3055\:308c\:305f\:30a2\:30a4\:30c7\:30a2:\n" <> ideaText <>
-    "\n\n\:4ee5\:524d\:306e\:6bb5\:843d:\n" <> prevParagraph,
+    "あなたは熟練したライターです。以下の「修正されたアイデア」に基づいて、" <>
+    "「以前の段落」を書き直してください。\n" <>
+    "ルール:\n" <>
+    "- 以前の段落の文体・構成・ユーザーの修正を可能な限り踏襲する\n" <>
+    "- 修正されたアイデアの内容変更に従って必要箇所を書き換える\n" <>
+    "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
+    "- 段落のテキストのみを出力し、それ以外（前置きや説明）は一切出力しない\n" <>
+    "- マークダウン記法は使わない\n" <>
+    "- ドキュメントコンテキストがある場合は、略語や固有名詞の意味を文脈から判断する\n" <>
+    "- リクエストを実行できない場合（ファイル未検出・情報不足等）は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
+    "修正されたアイデア:\n" <> ideaText <>
+    "\n\n以前の段落:\n" <> prevParagraph,
     "You are a skilled writer. Revise the 'Previous paragraph' based on " <>
     "the 'Updated idea' below.\n" <>
     "Rules:\n" <>
@@ -336,15 +352,15 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
   ];
 
 (* ============================================================
-   \:30b3\:30a2\:95a2\:6570: \:30a2\:30a4\:30c7\:30a2\:5c55\:958b
-   \:5168\:30bb\:30eb\:5185\:5bb9\:30a2\:30af\:30bb\:30b9\:306f NBAccess \:7d4c\:7531\:3002LLM \:306f NBCellTransformWithLLM \:7d4c\:7531\:3002
+   コア関数: アイデア展開
+   全セル内容アクセスは NBAccess 経由。LLM は NBCellTransformWithLLM 経由。
 
-   \:52d5\:4f5c\:30e2\:30fc\:30c9:
-   - mode \:672a\:8a2d\:5b9a\:ff08\:521d\:56de\:ff09: \:30a2\:30a4\:30c7\:30a2 \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:306b\:5c55\:958b
-   - mode === "idea"\:ff08\:30d7\:30ed\:30f3\:30d7\:30c8\:8868\:793a\:4e2d\:ff09:
-     \:4fdd\:5b58\:6e08\:307f\:30d1\:30e9\:30b0\:30e9\:30d5\:304c\:3042\:308c\:3070\:518d\:5c55\:958b\:ff08\:4fee\:6b63\:30a2\:30a4\:30c7\:30a2 + \:65e7\:30d1\:30e9\:30b0\:30e9\:30d5\:3092\:6e21\:3059\:ff09
-     \:306a\:3051\:308c\:3070\:521d\:56de\:5c55\:958b\:3068\:540c\:3058
-   - mode === "paragraph"\:ff08\:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d\:ff09: \:5c55\:958b\:3092\:7981\:6b62
+   動作モード:
+   - mode 未設定（初回）: アイデア → パラグラフに展開
+   - mode === "idea"（プロンプト表示中）:
+     保存済みパラグラフがあれば再展開（修正アイデア + 旧パラグラフを渡す）
+     なければ初回展開と同じ
+   - mode === "paragraph"（パラグラフ表示中）: 展開を禁止
    ============================================================ *)
 
 Options[DocExpandIdea] = {Fallback -> False};
@@ -353,22 +369,25 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{mode, prevParagraph, useFallback, promptFn, context},
     useFallback = TrueQ[OptionValue[Fallback]];
 
-    (* \:73fe\:5728\:306e\:30e2\:30fc\:30c9\:78ba\:8a8d (NBAccess \:7d4c\:7531) *)
+    (* Note セルは対象外 *)
+    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
+
+    (* 現在のモード確認 (NBAccess 経由) *)
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
 
-    (* \:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d \[RightArrow] \:5c55\:958b\:7981\:6b62 *)
+    (* パラグラフ表示中 → 展開禁止 *)
     If[mode === "paragraph",
       MessageDialog[iL[
-        "\:30d1\:30e9\:30b0\:30e9\:30d5\:30e2\:30fc\:30c9\:3067\:306f\:5c55\:958b\:3067\:304d\:307e\:305b\:3093\:3002\n" <>
-        "\:5148\:306b\:300c\:5207\:66ff\:300d\:3067\:30d7\:30ed\:30f3\:30d7\:30c8\:30e2\:30fc\:30c9\:306b\:623b\:3057\:3066\:304b\:3089\:3001\:30d7\:30ed\:30f3\:30d7\:30c8\:3092\:4fee\:6b63\:3057\:3066\:518d\:5c55\:958b\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+        "パラグラフモードでは展開できません。\n" <>
+        "先に「切替」でプロンプトモードに戻してから、プロンプトを修正して再展開してください。",
         "Cannot expand in paragraph mode.\n" <>
         "Switch to idea mode first, edit the prompt, then expand again."]];
       Return[$Failed]];
 
-    (* \:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:53ce\:96c6: \:5468\:8fba\:30bb\:30eb + \:30a2\:30bf\:30c3\:30c1\:30e1\:30f3\:30c8\:60c5\:5831 *)
+    (* ノートブックコンテキスト収集: 周辺セル + アタッチメント情報 *)
     context = iDocCollectContext[nb, cellIdx];
 
-    (* \:30d7\:30ed\:30f3\:30d7\:30c8\:69cb\:7bc9\:95a2\:6570\:306e\:9078\:629e *)
+    (* プロンプト構築関数の選択 *)
     prevParagraph = If[mode === "idea",
       NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate],
       None];
@@ -379,11 +398,11 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         Function[t, iDocExpandPromptFn[t, ctx]]]
     ];
 
-    (* \:975e\:540c\:671f LLM \:5909\:63db: \:30ab\:30fc\:30cd\:30eb\:3092\:30d6\:30ed\:30c3\:30af\:3057\:306a\:3044\:3002 *)
+    (* 非同期 LLM 変換: カーネルをブロックしない。 *)
     With[{nb2 = nb},
       NBAccess`NBCellTransformWithLLM[nb, cellIdx,
         promptFn,
-        (* completionFn: LLM \:5fdc\:7b54\:5f8c\:306b\:5b9f\:884c\:3055\:308c\:308b\:30b3\:30fc\:30eb\:30d0\:30c3\:30af *)
+        (* completionFn: LLM 応答後に実行されるコールバック *)
         Function[result,
           If[AssociationQ[result],
             Module[{ci = result["CellIdx"]},
@@ -392,31 +411,33 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
               NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "paragraph"];
               NBAccess`NBCellSetOptions[nb2, ci,
                 Sequence @@ $iDocParagraphCellOpts]],
-            (* \:30a8\:30e9\:30fc *)
+            (* エラー *)
             MessageDialog[iL[
-              "\:30a8\:30e9\:30fc: LLM \:5fdc\:7b54\:3092\:53d6\:5f97\:3067\:304d\:307e\:305b\:3093\:3067\:3057\:305f\:3002",
+              "エラー: LLM 応答を取得できませんでした。",
               "Error: Could not get LLM response."]]]],
         Fallback -> useFallback]
     ];
   ];
 
 (* ============================================================
-   \:30b3\:30a2\:95a2\:6570: \:30c8\:30b0\:30eb\:8868\:793a
+   コア関数: トグル表示
    ============================================================ *)
 
 DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
   Module[{currentText, mode, alternate, newMode, showTrans, transSrc,
           storedTranslation},
+    (* Note セルは対象外 *)
+    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
 
     (* ========================================================
-       \:7ffb\:8a33\:4ed8\:304d\:30bb\:30eb (mode="translated"): \:5143\:30c6\:30ad\:30b9\:30c8 \[LeftRightArrow] \:7ffb\:8a33
+       翻訳付きセル (mode="translated"): 元テキスト ↔ 翻訳
        ======================================================== *)
     If[mode === "translated",
       If[TrueQ[showTrans],
-        (* \:7ffb\:8a33\:8868\:793a\:4e2d \[RightArrow] \:5143\:30c6\:30ad\:30b9\:30c8\:306b\:623b\:3059\:ff08\:6c34\:8272\:67a0\:ff09 *)
+        (* 翻訳表示中 → 元テキストに戻す（水色枠） *)
         transSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
         If[StringQ[transSrc],
           NBAccess`NBCellSetTaggingRule[nb, cellIdx,
@@ -426,7 +447,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
             Sequence @@ $iDocTranslatedCellOpts];
           NBAccess`NBInvalidateCellsCache[nb];
           NBAccess`NBCellWriteText[nb, cellIdx, transSrc];],
-        (* \:5143\:30c6\:30ad\:30b9\:30c8\:8868\:793a\:4e2d \[RightArrow] \:7ffb\:8a33\:3092\:8868\:793a\:ff08\:9752\:67a0\:ff09 *)
+        (* 元テキスト表示中 → 翻訳を表示（青枠） *)
         storedTranslation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
         If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
           NBAccess`NBCellSetTaggingRule[nb, cellIdx,
@@ -439,7 +460,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
       Return[]];
 
     (* ========================================================
-       \:7ffb\:8a33\:8868\:793a\:4e2d (paragraph \:30e2\:30fc\:30c9): \:7ffb\:8a33 \[RightArrow] \:30a2\:30a4\:30c7\:30a2\:306b\:623b\:3059
+       翻訳表示中 (paragraph モード): 翻訳 → アイデアに戻す
        ======================================================== *)
     If[TrueQ[showTrans],
       transSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
@@ -458,7 +479,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         NBAccess`NBInvalidateCellsCache[nb];
         NBAccess`NBCellWriteText[nb, cellIdx, alternate];
         Return[alternate]];
-      (* fallback: \:7ffb\:8a33\:5143\:3092\:5fa9\:5143 *)
+      (* fallback: 翻訳元を復元 *)
       If[StringQ[transSrc],
         NBAccess`NBCellSetOptions[nb, cellIdx,
           CellFrame -> Inherited, CellFrameColor -> Inherited];
@@ -467,18 +488,18 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
       Return[]];
 
     (* ========================================================
-       \:901a\:5e38\:30d5\:30ed\:30fc: idea \[LeftRightArrow] paragraph (\[RightArrow] \:7ffb\:8a33\:304c\:3042\:308c\:3070\:7ffb\:8a33)
+       通常フロー: idea ↔ paragraph (→ 翻訳があれば翻訳)
        ======================================================== *)
     currentText = NBAccess`NBCellGetText[nb, cellIdx];
     alternate = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
 
     If[!StringQ[alternate],
       MessageDialog[iL[
-        "\:3053\:306e\:30bb\:30eb\:306b\:306f\:30c8\:30b0\:30eb\:53ef\:80fd\:306a\:30b3\:30f3\:30c6\:30f3\:30c4\:304c\:3042\:308a\:307e\:305b\:3093\:3002\n\:5148\:306b\:300c\:5c55\:958b\:300d\:3092\:5b9f\:884c\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+        "このセルにはトグル可能なコンテンツがありません。\n先に「展開」を実行してください。",
         "No toggleable content in this cell.\nRun 'Expand' first."]];
       Return[$Failed]];
 
-    (* \:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d \[RightArrow] \:7ffb\:8a33\:304c\:3042\:308c\:3070\:7ffb\:8a33\:3078\:3001\:306a\:3051\:308c\:3070\:30a2\:30a4\:30c7\:30a2\:3078 *)
+    (* パラグラフ表示中 → 翻訳があれば翻訳へ、なければアイデアへ *)
     If[mode === "paragraph",
       storedTranslation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
       If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
@@ -491,7 +512,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         NBAccess`NBCellWriteText[nb, cellIdx, storedTranslation];
         Return[storedTranslation]]];
 
-    (* idea \[LeftRightArrow] paragraph \:306e2\:6bb5\:968e\:30c8\:30b0\:30eb *)
+    (* idea ↔ paragraph の2段階トグル *)
     NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagAlternate,
       If[StringQ[currentText], currentText, ""]];
     newMode = If[mode === "paragraph", "idea", "paragraph"];
@@ -506,19 +527,19 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
   ];
 
 (* ============================================================
-   \:30b3\:30a2\:95a2\:6570: \:7ffb\:8a33
-   $Language \:304c\:82f1\:8a9e\:4ee5\:5916\[RightArrow]\:82f1\:8a9e\:306b\:3001\:82f1\:8a9e\[RightArrow]\:65e5\:672c\:8a9e\:306b\:7ffb\:8a33\:3002
-   \:7ffb\:8a33\:7d50\:679c\:306f TaggingRules \:306b\:4fdd\:6301\:3057\:3001\:5207\:66ff\:53ef\:80fd\:3002
+   コア関数: 翻訳
+   $Language が英語以外→英語に、英語→日本語に翻訳。
+   翻訳結果は TaggingRules に保持し、切替可能。
    
-   \:7ffb\:8a33\:53ef\:80fd: \:30d1\:30e9\:30b0\:30e9\:30d5\:30e2\:30fc\:30c9\:3001\:666e\:901a\:306e\:30bb\:30eb\:ff08\:30e2\:30fc\:30c9\:672a\:8a2d\:5b9a\:ff09
-   \:7ffb\:8a33\:4e0d\:53ef: \:30d7\:30ed\:30f3\:30d7\:30c8\:ff08\:30a2\:30a4\:30c7\:30a2\:ff09\:30e2\:30fc\:30c9\:3001\:7ffb\:8a33\:8868\:793a\:4e2d
+   翻訳可能: パラグラフモード、普通のセル（モード未設定）
+   翻訳不可: プロンプト（アイデア）モード、翻訳表示中
    
-   \:518d\:7ffb\:8a33\:6642\:306f\:3001\:30d7\:30ed\:30f3\:30d7\:30c8\:ff08\:3042\:308c\:3070\:ff09\:3092\:53c2\:7167\:3057\:3064\:3064\:3001
-   \:30e6\:30fc\:30b6\:30fc\:304c\:4fee\:6b63\:3057\:305f\:65e2\:5b58\:7ffb\:8a33\:3092\:8e0f\:8972\:3057\:3066\:66f4\:65b0\:3059\:308b\:3002
+   再翻訳時は、プロンプト（あれば）を参照しつつ、
+   ユーザーが修正した既存翻訳を踏襲して更新する。
    ============================================================ *)
 
-(* \:521d\:56de\:7ffb\:8a33\:30d7\:30ed\:30f3\:30d7\:30c8: \:666e\:901a\:306e\:30bb\:30eb\:7528\:ff08\:8a00\:8a9e\:81ea\:52d5\:691c\:51fa\:ff09
-   \:30c6\:30ad\:30b9\:30c8\:304c primaryLang \:306a\:3089 alternateLang \:306b\:3001\:305d\:308c\:4ee5\:5916\:306a\:3089 primaryLang \:306b\:7ffb\:8a33\:3059\:308b *)
+(* 初回翻訳プロンプト: 普通のセル用（言語自動検出）
+   テキストが primaryLang なら alternateLang に、それ以外なら primaryLang に翻訳する *)
 iDocTranslateAutoPromptFn[text_String, primaryLang_String, alternateLang_String] :=
   "Detect the language of the following text, then translate it.\n" <>
   "- If the text is in " <> primaryLang <> ", translate it into " <> alternateLang <> ".\n" <>
@@ -531,7 +552,7 @@ iDocTranslateAutoPromptFn[text_String, primaryLang_String, alternateLang_String]
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   "Text to translate:\n" <> text;
 
-(* \:30d1\:30e9\:30b0\:30e9\:30d5\:7528\:7ffb\:8a33\:30d7\:30ed\:30f3\:30d7\:30c8: \:56fa\:5b9a\:30bf\:30fc\:30b2\:30c3\:30c8\:8a00\:8a9e *)
+(* パラグラフ用翻訳プロンプト: 固定ターゲット言語 *)
 iDocTranslatePromptFn[text_String, targetLang_String] :=
   "Translate the following text into " <> targetLang <> ".\n" <>
   "Rules:\n" <>
@@ -542,7 +563,7 @@ iDocTranslatePromptFn[text_String, targetLang_String] :=
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   "Text to translate:\n" <> text;
 
-(* \:521d\:56de\:7ffb\:8a33\:30d7\:30ed\:30f3\:30d7\:30c8\:ff08\:30d7\:30ed\:30f3\:30d7\:30c8\:53c2\:7167\:4ed8\:304d\:ff09 *)
+(* 初回翻訳プロンプト（プロンプト参照付き） *)
 iDocTranslateWithContextPromptFn[text_String, targetLang_String, ideaText_String] :=
   "Translate the following paragraph into " <> targetLang <> ".\n" <>
   "The paragraph was written based on the 'Original prompt' below. " <>
@@ -556,7 +577,7 @@ iDocTranslateWithContextPromptFn[text_String, targetLang_String, ideaText_String
   "Original prompt:\n" <> ideaText <>
   "\n\nParagraph to translate:\n" <> text;
 
-(* \:518d\:7ffb\:8a33\:30d7\:30ed\:30f3\:30d7\:30c8: \:65e2\:5b58\:7ffb\:8a33\:306e\:30e6\:30fc\:30b6\:30fc\:4fee\:6b63\:3092\:8e0f\:8972\:3057\:3064\:3064\:66f4\:65b0 *)
+(* 再翻訳プロンプト: 既存翻訳のユーザー修正を踏襲しつつ更新 *)
 iDocReTranslatePromptFn[text_String, targetLang_String,
     prevTranslation_String, ideaText_String] :=
   "The paragraph below has been updated. Revise the 'Previous translation' accordingly.\n" <>
@@ -578,25 +599,27 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{currentText, storedTranslation, storedSrc, showTrans,
           mode, targetLang, useFallback, ideaText, promptFn},
     useFallback = TrueQ[OptionValue[Fallback]];
+    (* Note セルは対象外 *)
+    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
 
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
 
-    (* \:7ffb\:8a33\:4e0d\:53ef: \:30d7\:30ed\:30f3\:30d7\:30c8\:ff08\:30a2\:30a4\:30c7\:30a2\:ff09\:30e2\:30fc\:30c9 *)
+    (* 翻訳不可: プロンプト（アイデア）モード *)
     If[mode === "idea",
       MessageDialog[iL[
-        "\:30d7\:30ed\:30f3\:30d7\:30c8\:30e2\:30fc\:30c9\:3067\:306f\:7ffb\:8a33\:3067\:304d\:307e\:305b\:3093\:3002\n" <>
-        "\:30d1\:30e9\:30b0\:30e9\:30d5\:306b\:5c55\:958b\:3057\:3066\:304b\:3089\:7ffb\:8a33\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+        "プロンプトモードでは翻訳できません。\n" <>
+        "パラグラフに展開してから翻訳してください。",
         "Cannot translate in idea/prompt mode.\n" <>
         "Expand to paragraph first, then translate."]];
       Return[$Failed]];
 
-    (* \:7ffb\:8a33\:4e0d\:53ef: \:7ffb\:8a33\:8868\:793a\:4e2d *)
+    (* 翻訳不可: 翻訳表示中 *)
     If[TrueQ[showTrans],
       MessageDialog[iL[
-        "\:7ffb\:8a33\:8868\:793a\:4e2d\:3067\:3059\:3002\n" <>
-        "\:300c\:5207\:66ff\:300d\:3067\:5143\:30c6\:30ad\:30b9\:30c8\:306b\:623b\:3057\:3066\:304b\:3089\:518d\:7ffb\:8a33\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+        "翻訳表示中です。\n" <>
+        "「切替」で元テキストに戻してから再翻訳してください。",
         "Currently showing translation.\n" <>
         "Toggle back to original text before re-translating."]];
       Return[$Failed]];
@@ -609,16 +632,16 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     storedSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
     targetLang = iDocTranslationTarget[];
 
-    (* \:30d7\:30ed\:30f3\:30d7\:30c8\:ff08\:30a2\:30a4\:30c7\:30a2\:ff09\:30c6\:30ad\:30b9\:30c8\:3092\:53c2\:7167\:7528\:306b\:53d6\:5f97 *)
+    (* プロンプト（アイデア）テキストを参照用に取得 *)
     ideaText = If[mode === "paragraph",
       NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate],
       None];
     If[!StringQ[ideaText], ideaText = ""];
 
-    (* \:4fdd\:5b58\:6e08\:307f\:7ffb\:8a33\:304c\:3042\:308a\:30bd\:30fc\:30b9\:304c\:4e00\:81f4 \[RightArrow] \:5373\:8868\:793a\:ff08LLM\:4e0d\:8981\:ff09 *)
+    (* 保存済み翻訳がありソースが一致 → 即表示（LLM不要） *)
     If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "" &&
        StringQ[storedSrc] && storedSrc === currentText,
-      (* \:666e\:901a\:30bb\:30eb\:306a\:3089\:7ffb\:8a33\:4ed8\:304d\:30e2\:30fc\:30c9\:3092\:8a2d\:5b9a *)
+      (* 普通セルなら翻訳付きモードを設定 *)
       If[!StringQ[mode] || mode === "translated",
         NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagMode, "translated"]];
       NBAccess`NBCellSetTaggingRule[nb, cellIdx,
@@ -630,23 +653,23 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
       NBAccess`NBCellWriteText[nb, cellIdx, storedTranslation];
       Return[]];
 
-    (* \:30d7\:30ed\:30f3\:30d7\:30c8\:69cb\:7bc9: \:65e2\:5b58\:7ffb\:8a33\:306e\:6709\:7121\:3067\:5206\:5c90 *)
+    (* プロンプト構築: 既存翻訳の有無で分岐 *)
     promptFn = Which[
-      (* \:518d\:7ffb\:8a33: \:30bd\:30fc\:30b9\:304c\:5909\:308f\:3063\:305f + \:65e2\:5b58\:7ffb\:8a33\:3042\:308a \[RightArrow] \:30e6\:30fc\:30b6\:30fc\:4fee\:6b63\:3092\:8e0f\:8972 *)
+      (* 再翻訳: ソースが変わった + 既存翻訳あり → ユーザー修正を踏襲 *)
       StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
         With[{prev = storedTranslation, idea = ideaText, tl = targetLang},
           Function[t, iDocReTranslatePromptFn[t, tl, prev, idea]]],
-      (* \:521d\:56de\:7ffb\:8a33: \:30d7\:30ed\:30f3\:30d7\:30c8\:53c2\:7167\:4ed8\:304d\:ff08\:30d1\:30e9\:30b0\:30e9\:30d5\:30e2\:30fc\:30c9\:306e\:5834\:5408\:ff09 *)
+      (* 初回翻訳: プロンプト参照付き（パラグラフモードの場合） *)
       ideaText =!= "",
         With[{idea = ideaText, tl = targetLang},
           Function[t, iDocTranslateWithContextPromptFn[t, tl, idea]]],
-      (* \:521d\:56de\:7ffb\:8a33: \:666e\:901a\:306e\:30bb\:30eb \[RightArrow] \:8a00\:8a9e\:81ea\:52d5\:691c\:51fa *)
+      (* 初回翻訳: 普通のセル → 言語自動検出 *)
       True,
         With[{pl = iDocOutputLanguage[], al = iDocTranslationTarget[]},
           Function[t, iDocTranslateAutoPromptFn[t, pl, al]]]
     ];
 
-    (* \:975e\:540c\:671f\:7ffb\:8a33 *)
+    (* 非同期翻訳 *)
     With[{nb2 = nb, srcText = currentText,
           isPlain = (!StringQ[mode] || mode === "translated")},
       NBAccess`NBCellTransformWithLLM[nb, cellIdx,
@@ -672,19 +695,19 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
 Options[DocTranslate] = {Fallback -> False};
 
 (* ============================================================
-   \:30b3\:30a2\:95a2\:6570: \:540c\:671f (Sync)
-   \:30d7\:30ed\:30f3\:30d7\:30c8\:30fb\:30d1\:30e9\:30b0\:30e9\:30d5\:30fb\:7ffb\:8a33\:306e\:3046\:3061\:3001\:73fe\:5728\:8868\:793a\:4e2d\:306e\:30c6\:30ad\:30b9\:30c8\:3092\:57fa\:6e96\:3068\:3057\:3066
-   \:4ed6\:306e\:30b3\:30f3\:30dd\:30fc\:30cd\:30f3\:30c8\:3092 LLM \:3067\:66f4\:65b0\:3059\:308b\:3002\:30bb\:30eb\:8868\:793a\:306f\:5909\:66f4\:3057\:306a\:3044\:3002
+   コア関数: 同期 (Sync)
+   プロンプト・パラグラフ・翻訳のうち、現在表示中のテキストを基準として
+   他のコンポーネントを LLM で更新する。セル表示は変更しない。
 
-   - \:30d7\:30ed\:30f3\:30d7\:30c8\:8868\:793a\:4e2d (mode="idea"):
-     \:30d7\:30ed\:30f3\:30d7\:30c8\:304b\:3089 \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:3092\:518d\:751f\:6210\:3002\:7ffb\:8a33\:304c\:3042\:308c\:3070\:9023\:9396\:3067\:518d\:7ffb\:8a33\:3002
-   - \:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d (mode="paragraph"):
-     \:30d1\:30e9\:30b0\:30e9\:30d5\:304b\:3089 \[RightArrow] \:7ffb\:8a33\:3092\:518d\:751f\:6210\:3002
-   - \:7ffb\:8a33\:8868\:793a\:4e2d (showTranslation=True):
-     \:7ffb\:8a33\:304b\:3089 \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:3092\:9006\:66f4\:65b0\:3002
+   - プロンプト表示中 (mode="idea"):
+     プロンプトから → パラグラフを再生成。翻訳があれば連鎖で再翻訳。
+   - パラグラフ表示中 (mode="paragraph"):
+     パラグラフから → 翻訳を再生成。
+   - 翻訳表示中 (showTranslation=True):
+     翻訳から → パラグラフを逆更新。
    ============================================================ *)
 
-(* \:7ffb\:8a33\[RightArrow]\:30d1\:30e9\:30b0\:30e9\:30d5\:9006\:540c\:671f\:30d7\:30ed\:30f3\:30d7\:30c8 *)
+(* 翻訳→パラグラフ逆同期プロンプト *)
 iDocReverseSyncPromptFn[editedTranslation_String, prevParagraph_String,
     ideaText_String, outputLang_String] :=
   "TASK: The user has edited a translation. Your job is to update the " <>
@@ -707,10 +730,10 @@ iDocReverseSyncPromptFn[editedTranslation_String, prevParagraph_String,
   If[ideaText =!= "",
     "Original prompt:\n" <> ideaText <> "\n\n", ""] <>
   "Original paragraph (" <> outputLang <> "):\n" <> prevParagraph <>
-  "\n\nEdited translation (different language \[LongDash] do NOT output in this language):\n" <> editedTranslation;
+  "\n\nEdited translation (different language — do NOT output in this language):\n" <> editedTranslation;
 
-(* \:30bf\:30b0\:304b\:3089\:30bb\:30eb\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:3092\:518d\:691c\:7d22\:3059\:308b\:3002
-   Job \:306e\:9032\:6357\:30bb\:30eb\:633f\:5165\:3067\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:304c\:305a\:308c\:305f\:5834\:5408\:306b\:4f7f\:7528\:3059\:308b\:3002 *)
+(* タグからセルインデックスを再検索する。
+   Job の進捗セル挿入でインデックスがずれた場合に使用する。 *)
 iDocFindSyncTag[nb_NotebookObject, tag_String] :=
   Module[{nCells, val},
     nCells = NBAccess`NBCellCount[nb];
@@ -727,6 +750,8 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{mode, showTrans, currentText, useFallback, ideaText, paragraph,
           translation, targetLang, prompt, context, syncTag},
     useFallback = TrueQ[OptionValue[Fallback]];
+    (* Note セルは対象外 *)
+    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
@@ -737,12 +762,12 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     targetLang = iDocTranslationTarget[];
     context = iDocCollectContext[nb, cellIdx];
 
-    (* \:30bb\:30eb\:306b\:30bf\:30b0\:3092\:4ed8\:4e0e: Job \:306e\:9032\:6357\:30bb\:30eb\:633f\:5165\:3067\:30a4\:30f3\:30c7\:30c3\:30af\:30b9\:304c\:305a\:308c\:3066\:3082\:518d\:767a\:898b\:53ef\:80fd\:306b\:3059\:308b *)
+    (* セルにタグを付与: Job の進捗セル挿入でインデックスがずれても再発見可能にする *)
     syncTag = "doc-sync-" <> ToString[UnixTime[]] <> "-" <> ToString[RandomInteger[99999]];
     NBAccess`NBCellSetTaggingRule[nb, cellIdx, {$iDocTagRoot, "syncTag"}, syncTag];
 
     Which[
-      (* === Case 1: \:30d7\:30ed\:30f3\:30d7\:30c8\:8868\:793a\:4e2d \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:518d\:751f\:6210 (+\:7ffb\:8a33\:9023\:9396) === *)
+      (* === Case 1: プロンプト表示中 → パラグラフ再生成 (+翻訳連鎖) === *)
       mode === "idea",
         ideaText = currentText;
         paragraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
@@ -751,7 +776,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
           iDocReExpandPromptFn[ideaText, paragraph, context],
           iDocExpandPromptFn[ideaText, context]];
         Quiet[CurrentValue[nb, WindowStatusArea] =
-          iL["\:540c\:671f\:4e2d: \:30d1\:30e9\:30b0\:30e9\:30d5\:751f\:6210...", "Syncing: generating paragraph..."]];
+          iL["同期中: パラグラフ生成...", "Syncing: generating paragraph..."]];
         With[{nb2 = nb, origIdx = cellIdx, tl = targetLang, fb = useFallback,
               hasTranslation = StringQ[translation] && StringTrim[translation] =!= "",
               oldTranslation = If[StringQ[translation], translation, ""],
@@ -769,7 +794,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                     $iDocTagAlternate, newPara];
                   If[hasTranslation,
                     Quiet[CurrentValue[nb2, WindowStatusArea] =
-                      iL["\:540c\:671f\:4e2d: \:7ffb\:8a33\:66f4\:65b0...", "Syncing: updating translation..."]];
+                      iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
                     Module[{tPrompt = iDocReTranslatePromptFn[
                         newPara, tl, oldTranslation, idea]},
                       NBAccess`$NBLLMQueryFunc[tPrompt,
@@ -787,7 +812,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                           NBAccess`NBCellSetTaggingRule[nb2, idx2,
                             {$iDocTagRoot, "syncTag"}, Inherited];
                           Quiet[CurrentValue[nb2, WindowStatusArea] =
-                            iL["\:540c\:671f\:5b8c\:4e86", "Sync complete"]];
+                            iL["同期完了", "Sync complete"]];
                           RunScheduledTask[With[{pNb = nb2},
                             Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
                         nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, idx],
@@ -795,19 +820,19 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                     NBAccess`NBCellSetTaggingRule[nb2, idx,
                       {$iDocTagRoot, "syncTag"}, Inherited];
                     Quiet[CurrentValue[nb2, WindowStatusArea] =
-                      iL["\:540c\:671f\:5b8c\:4e86", "Sync complete"]];
+                      iL["同期完了", "Sync complete"]];
                     RunScheduledTask[With[{pNb = nb2},
                       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
                 NBAccess`NBCellSetTaggingRule[nb2, idx,
                   {$iDocTagRoot, "syncTag"}, Inherited];
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
-                  iL["\:540c\:671f\:30a8\:30e9\:30fc", "Sync error"]];
+                  iL["同期エラー", "Sync error"]];
                 RunScheduledTask[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
 
-      (* === Case 2: \:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a\:4e2d \[RightArrow] \:7ffb\:8a33\:3092\:518d\:751f\:6210 === *)
+      (* === Case 2: パラグラフ表示中 → 翻訳を再生成 === *)
       mode === "paragraph",
         paragraph = currentText;
         translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
@@ -817,12 +842,12 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
           NBAccess`NBCellSetTaggingRule[nb, cellIdx,
             {$iDocTagRoot, "syncTag"}, Inherited];
           MessageDialog[iL[
-            "\:7ffb\:8a33\:304c\:3042\:308a\:307e\:305b\:3093\:3002\:5148\:306b\:7ffb\:8a33\:30dc\:30bf\:30f3\:3067\:7ffb\:8a33\:3092\:751f\:6210\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+            "翻訳がありません。先に翻訳ボタンで翻訳を生成してください。",
             "No translation exists. Use the Translate button first."]];
           Return[$Failed]];
         prompt = iDocReTranslatePromptFn[paragraph, targetLang, translation, ideaText];
         Quiet[CurrentValue[nb, WindowStatusArea] =
-          iL["\:540c\:671f\:4e2d: \:7ffb\:8a33\:66f4\:65b0...", "Syncing: updating translation..."]];
+          iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
         With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph, stag = syncTag},
           NBAccess`$NBLLMQueryFunc[prompt,
             Function[response,
@@ -839,13 +864,13 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
               NBAccess`NBCellSetTaggingRule[nb2, idx,
                 {$iDocTagRoot, "syncTag"}, Inherited];
               Quiet[CurrentValue[nb2, WindowStatusArea] =
-                iL["\:540c\:671f\:5b8c\:4e86", "Sync complete"]];
+                iL["同期完了", "Sync complete"]];
               RunScheduledTask[With[{pNb = nb2},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
 
-      (* === Case 3: \:7ffb\:8a33\:8868\:793a\:4e2d \[RightArrow] \:30d1\:30e9\:30b0\:30e9\:30d5\:3092\:9006\:66f4\:65b0 === *)
+      (* === Case 3: 翻訳表示中 → パラグラフを逆更新 === *)
       TrueQ[showTrans],
         translation = currentText;
         paragraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
@@ -858,7 +883,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         prompt = iDocReverseSyncPromptFn[translation, paragraph,
           ideaText, iDocOutputLanguage[]];
         Quiet[CurrentValue[nb, WindowStatusArea] =
-          iL["\:540c\:671f\:4e2d: \:30d1\:30e9\:30b0\:30e9\:30d5\:66f4\:65b0...", "Syncing: updating paragraph..."]];
+          iL["同期中: パラグラフ更新...", "Syncing: updating paragraph..."]];
         With[{nb2 = nb, origIdx = cellIdx, m = mode, stag = syncTag},
           NBAccess`$NBLLMQueryFunc[prompt,
             Function[response,
@@ -874,25 +899,25 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
               NBAccess`NBCellSetTaggingRule[nb2, idx,
                 {$iDocTagRoot, "syncTag"}, Inherited];
               Quiet[CurrentValue[nb2, WindowStatusArea] =
-                iL["\:540c\:671f\:5b8c\:4e86", "Sync complete"]];
+                iL["同期完了", "Sync complete"]];
               RunScheduledTask[With[{pNb = nb2},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
 
-      (* === \:305d\:308c\:4ee5\:5916: \:540c\:671f\:5bfe\:8c61\:306a\:3057 === *)
+      (* === それ以外: 同期対象なし === *)
       True,
         NBAccess`NBCellSetTaggingRule[nb, cellIdx,
           {$iDocTagRoot, "syncTag"}, Inherited];
         MessageDialog[iL[
-          "\:3053\:306e\:30bb\:30eb\:306b\:306f\:540c\:671f\:53ef\:80fd\:306a\:30b3\:30f3\:30c6\:30f3\:30c4\:304c\:3042\:308a\:307e\:305b\:3093\:3002",
+          "このセルには同期可能なコンテンツがありません。",
           "No syncable content in this cell."]]
     ];
   ];
 
 (* ============================================================
-   \:4e00\:62ec\:8868\:793a\:5207\:66ff
-   \:5c55\:958b\:6e08\:307f\:30bb\:30eb\:ff08idea/paragraph/translated \:30e2\:30fc\:30c9\:ff09\:306e\:8868\:793a\:3092\:4e00\:62ec\:3067\:5207\:308a\:66ff\:3048\:308b\:3002
+   一括表示切替
+   展開済みセル（idea/paragraph/translated モード）の表示を一括で切り替える。
    ============================================================ *)
 
 iDocShowAllAs[targetView_String] :=
@@ -904,12 +929,12 @@ iDocShowAllAs[targetView_String] :=
     Do[
       mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
       showTrans = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagShowTranslation];
-      (* \:5bfe\:8c61: documentation \:30e2\:30fc\:30c9\:3092\:6301\:3064\:30bb\:30eb\:306e\:307f *)
+      (* 対象: documentation モードを持つセルのみ *)
       If[StringQ[mode],
         Which[
-          (* === \:5168\:30d7\:30ed\:30f3\:30d7\:30c8\:8868\:793a === *)
+          (* === 全プロンプト表示 === *)
           targetView === "idea" && mode === "paragraph" && !TrueQ[showTrans],
-            (* paragraph \[RightArrow] idea *)
+            (* paragraph → idea *)
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
             If[StringQ[alternate],
               currentText = NBAccess`NBCellGetText[nb, i];
@@ -922,7 +947,7 @@ iDocShowAllAs[targetView_String] :=
               NBAccess`NBInvalidateCellsCache[nb];
               count++],
           targetView === "idea" && TrueQ[showTrans] && mode === "paragraph",
-            (* translation \[RightArrow] idea (via paragraph revert + toggle) *)
+            (* translation → idea (via paragraph revert + toggle) *)
             transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
             If[StringQ[transSrc] && StringQ[alternate],
@@ -937,9 +962,9 @@ iDocShowAllAs[targetView_String] :=
               NBAccess`NBInvalidateCellsCache[nb];
               count++],
 
-          (* === \:5168\:30d1\:30e9\:30b0\:30e9\:30d5\:8868\:793a === *)
+          (* === 全パラグラフ表示 === *)
           targetView === "paragraph" && mode === "idea",
-            (* idea \[RightArrow] paragraph *)
+            (* idea → paragraph *)
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
             If[StringQ[alternate],
               currentText = NBAccess`NBCellGetText[nb, i];
@@ -952,7 +977,7 @@ iDocShowAllAs[targetView_String] :=
               NBAccess`NBInvalidateCellsCache[nb];
               count++],
           targetView === "paragraph" && TrueQ[showTrans] && mode === "paragraph",
-            (* translation \[RightArrow] paragraph *)
+            (* translation → paragraph *)
             transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
             If[StringQ[transSrc],
               NBAccess`NBCellSetTaggingRule[nb, i,
@@ -964,11 +989,11 @@ iDocShowAllAs[targetView_String] :=
               NBAccess`NBInvalidateCellsCache[nb];
               count++],
 
-          (* === \:5168\:7ffb\:8a33\:8868\:793a === *)
+          (* === 全翻訳表示 === *)
           targetView === "translation" && !TrueQ[showTrans],
             storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
             If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
-              (* \:73fe\:5728\:306e\:30c6\:30ad\:30b9\:30c8\:3092 translationSrc \:306b\:4fdd\:5b58 *)
+              (* 現在のテキストを translationSrc に保存 *)
               currentText = NBAccess`NBCellGetText[nb, i];
               NBAccess`NBCellSetTaggingRule[nb, i,
                 $iDocTagTranslationSrc, If[StringQ[currentText], currentText, ""]];
@@ -979,7 +1004,7 @@ iDocShowAllAs[targetView_String] :=
               NBAccess`NBInvalidateCellsCache[nb];
               count++]
         ]];
-      (* translated \:30e2\:30fc\:30c9\:ff08\:666e\:901a\:30bb\:30eb+\:7ffb\:8a33\:ff09\:306e\:30c8\:30b0\:30eb\:3082\:51e6\:7406 *)
+      (* translated モード（普通セル+翻訳）のトグルも処理 *)
       If[mode === "translated",
         Which[
           targetView === "translation" && !TrueQ[showTrans],
@@ -1009,14 +1034,14 @@ iDocShowAllAs[targetView_String] :=
     {i, nCells}];
     If[count > 0,
       Quiet[CurrentValue[nb, WindowStatusArea] =
-        iL[ToString[count] <> " \:30bb\:30eb\:3092\:5207\:308a\:66ff\:3048\:307e\:3057\:305f\:3002",
+        iL[ToString[count] <> " セルを切り替えました。",
            ToString[count] <> " cells switched."]];
       RunScheduledTask[With[{pNb = nb},
         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]];
   ];
 
 (* ============================================================
-   \:30d1\:30ec\:30c3\:30c8\:30dc\:30bf\:30f3\:30a2\:30af\:30b7\:30e7\:30f3
+   パレットボタンアクション
    ============================================================ *)
 
 SetAttributes[iDocButton, HoldRest];
@@ -1038,36 +1063,36 @@ iDocExpandSelected[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
-      MessageDialog[iL["\:30bb\:30eb\:3092\:9078\:629e\:3057\:3066\:304f\:3060\:3055\:3044\:3002", "Please select a cell."]];
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     If[Length[cellIdxs] === 1,
       DocExpandIdea[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]],
-      (* \:8907\:6570\:30bb\:30eb: \:975e\:540c\:671f\:30c1\:30a7\:30fc\:30f3\:3067\:9010\:6b21\:5c55\:958b *)
+      (* 複数セル: 非同期チェーンで逐次展開 *)
       iDocExpandSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
   ];
 
-(* \:8907\:6570\:30bb\:30eb\:5c55\:958b\:306e\:975e\:540c\:671f\:30c1\:30a7\:30fc\:30f3 *)
+(* 複数セル展開の非同期チェーン *)
 iDocExpandSelectedChain[nb_, idxs_, pos_, fb_] :=
   If[pos > Length[idxs],
     Quiet[CurrentValue[nb, WindowStatusArea] =
-      iL[ToString[Length[idxs]] <> " \:30bb\:30eb\:3092\:5c55\:958b\:3057\:307e\:3057\:305f\:3002",
+      iL[ToString[Length[idxs]] <> " セルを展開しました。",
          ToString[Length[idxs]] <> " cells expanded."]];
     RunScheduledTask[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
-      iL["\:5c55\:958b\:4e2d: ", "Expanding: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
+      iL["展開中: ", "Expanding: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[mode === "paragraph",
-        (* \:30d1\:30e9\:30b0\:30e9\:30d5\:30e2\:30fc\:30c9\:306f\:30b9\:30ad\:30c3\:30d7 *)
+      If[mode === "paragraph" || iDocIsNoteCell[nb, cellIdx],
+        (* パラグラフモード / Note セルはスキップ *)
         iDocExpandSelectedChain[nb, idxs, pos + 1, fb],
-        (* \:5c55\:958b: completionFn \:5185\:3067\:6b21\:3078\:9032\:3080\:3002
-           DocExpandIdea \:306f\:5185\:90e8\:3067 NBCellTransformWithLLM \:3092\:4f7f\:3044\:3001
-           completionFn \:3067\:30e1\:30bf\:30c7\:30fc\:30bf\:3092\:8a2d\:5b9a\:3059\:308b\:3002\:3053\:3053\:3067\:306f\:8ffd\:52a0\:306e\:5b8c\:4e86\:51e6\:7406\:3068\:3057\:3066
-           \:30c1\:30a7\:30fc\:30f3\:306e\:6b21\:30b9\:30c6\:30c3\:30d7\:3092\:547c\:3076\:3002 *)
+        (* 展開: completionFn 内で次へ進む。
+           DocExpandIdea は内部で NBCellTransformWithLLM を使い、
+           completionFn でメタデータを設定する。ここでは追加の完了処理として
+           チェーンの次ステップを呼ぶ。 *)
         DocExpandIdea[nb, cellIdx, Fallback -> fb];
-        (* DocExpandIdea \:306f\:975e\:540c\:671f\:306a\:306e\:3067\:5373\:5ea7\:306b\:6b21\:3078\:9032\:3081\:306a\:3044\:3002
-           \:4ee3\:308f\:306b ScheduledTask \:3067\:9045\:5ef6\:5b9f\:884c\:3057\:3066\:6b21\:306e\:30bb\:30eb\:3078\:3002 *)
+        (* DocExpandIdea は非同期なので即座に次へ進めない。
+           代わに ScheduledTask で遅延実行して次のセルへ。 *)
         RunScheduledTask[
           With[{pNb = nb, is = idxs, p = pos, f = fb},
             iDocExpandSelectedChain[pNb, is, p + 1, f]], {2}]]]
@@ -1077,7 +1102,7 @@ iDocToggleSelected[] :=
   Module[{nb, cellIdx},
     {nb, cellIdx} = iDocResolveTargetCell[];
     If[cellIdx === 0,
-      MessageDialog[iL["\:30bb\:30eb\:3092\:9078\:629e\:3057\:3066\:304f\:3060\:3055\:3044\:3002", "Please select a cell."]];
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     DocToggleView[nb, cellIdx]
   ];
@@ -1086,28 +1111,28 @@ iDocTranslateSelected[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
-      MessageDialog[iL["\:30bb\:30eb\:3092\:9078\:629e\:3057\:3066\:304f\:3060\:3055\:3044\:3002", "Please select a cell."]];
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     If[Length[cellIdxs] === 1,
       DocTranslate[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]],
-      (* \:8907\:6570\:30bb\:30eb: \:975e\:540c\:671f\:30c1\:30a7\:30fc\:30f3\:3067\:9010\:6b21\:7ffb\:8a33 *)
+      (* 複数セル: 非同期チェーンで逐次翻訳 *)
       iDocTranslateSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
   ];
 
-(* \:8907\:6570\:30bb\:30eb\:7ffb\:8a33\:306e\:975e\:540c\:671f\:30c1\:30a7\:30fc\:30f3 *)
+(* 複数セル翻訳の非同期チェーン *)
 iDocTranslateSelectedChain[nb_, idxs_, pos_, fb_] :=
   If[pos > Length[idxs],
     Quiet[CurrentValue[nb, WindowStatusArea] =
-      iL[ToString[Length[idxs]] <> " \:30bb\:30eb\:3092\:7ffb\:8a33\:3057\:307e\:3057\:305f\:3002",
+      iL[ToString[Length[idxs]] <> " セルを翻訳しました。",
          ToString[Length[idxs]] <> " cells translated."]];
     RunScheduledTask[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
-      iL["\:7ffb\:8a33\:4e2d: ", "Translating: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
+      iL["翻訳中: ", "Translating: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[mode === "idea",
-        (* \:30d7\:30ed\:30f3\:30d7\:30c8\:30e2\:30fc\:30c9\:306f\:30b9\:30ad\:30c3\:30d7 *)
+      If[mode === "idea" || iDocIsNoteCell[nb, cellIdx],
+        (* プロンプトモード / Note セルはスキップ *)
         iDocTranslateSelectedChain[nb, idxs, pos + 1, fb],
         DocTranslate[nb, cellIdx, Fallback -> fb];
         RunScheduledTask[
@@ -1119,29 +1144,608 @@ iDocSyncSelected[] :=
   Module[{nb, cellIdx},
     {nb, cellIdx} = iDocResolveTargetCell[];
     If[cellIdx === 0,
-      MessageDialog[iL["\:30bb\:30eb\:3092\:9078\:629e\:3057\:3066\:304f\:3060\:3055\:3044\:3002", "Please select a cell."]];
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     DocSync[nb, cellIdx, Fallback -> ClaudeCode`GetPaletteFallback[]]
   ];
 
 (* ============================================================
-   \:30d1\:30ec\:30c3\:30c8\:8a2d\:5b9a
+   Note セル挿入
+   ============================================================ *)
+
+(* Note スタイルのセル定義: 薄い黄色背景、小さめフォント、インデント付き *)
+$iDocNoteCellOpts = {
+  CellFrame -> {{2, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.85, 0.78, 0.5],
+  Background -> RGBColor[1, 0.98, 0.9],
+  FontSize -> 11,
+  FontColor -> GrayLevel[0.35],
+  CellMargins -> {{66, 20}, {4, 4}},
+  CellDingbat -> StyleBox["\[FilledSmallSquare]", FontColor -> RGBColor[0.85, 0.78, 0.5]]
+};
+
+DocInsertNote[nb_NotebookObject] :=
+  Module[{noteCell, hasNoteStyle},
+    (* ノートブックにスタイル "Note" が定義されているか確認 *)
+    hasNoteStyle = Quiet[
+      MemberQ[
+        Cases[
+          Quiet[Options[nb, StyleDefinitions]],
+          Cell[StyleData["Note"], ___], Infinity],
+        _Cell]];
+    If[TrueQ[hasNoteStyle],
+      (* 既存の Note スタイルを使用 *)
+      NotebookWrite[nb,
+        Cell[iL["ここへはメモなどを書く...", "Write notes here..."], "Note"]],
+      (* Note スタイル未定義: セルスタイルを "Note" にしつつ
+         セルレベルオプションで見た目を設定 *)
+      noteCell = Cell[
+        iL["ここへはメモなどを書く...", "Write notes here..."],
+        "Note",
+        Sequence @@ $iDocNoteCellOpts
+      ];
+      NotebookWrite[nb, noteCell]
+    ];
+  ];
+
+(* ============================================================
+   Note セル判定ヘルパー
+   ============================================================ *)
+
+(* セルが Note スタイルかどうかを判定する *)
+iDocIsNoteCell[nb_NotebookObject, cellIdx_Integer] :=
+  NBAccess`NBCellStyle[nb, cellIdx] === "Note";
+
+(* ============================================================
+   エクスポート: 共通ヘルパー
+   ============================================================ *)
+
+(* ノートブック名（拡張子なし）を取得 *)
+iDocNotebookBaseName[nb_NotebookObject] :=
+  Module[{name},
+    name = Quiet[NotebookFileName[nb]];
+    If[StringQ[name],
+      FileBaseName[name],
+      "Untitled"]
+  ];
+
+(* 出力ディレクトリを作成して返す *)
+iDocEnsureExportDir[nb_NotebookObject, suffix_String] :=
+  Module[{dir, nbDir, baseName},
+    nbDir = Quiet[NotebookDirectory[nb]];
+    If[!StringQ[nbDir], Return[$Failed]];
+    baseName = iDocNotebookBaseName[nb];
+    dir = FileNameJoin[{nbDir, baseName <> "_" <> suffix}];
+    If[!DirectoryQ[dir], CreateDirectory[dir]];
+    dir
+  ];
+
+(* BoxData/TextData 内のインライン数式ボックスを TeX に変換する *)
+iDocBoxToTeX[box_] :=
+  Quiet[Check[
+    Module[{expr},
+      expr = ToExpression[box, TraditionalForm, HoldForm];
+      If[Head[expr] === HoldForm,
+        ToString[TeXForm[ReleaseHold[expr]]],
+        ToString[TeXForm[expr]]]],
+    (* フォールバック: MakeBoxes → TeXForm が失敗する場合 *)
+    With[{s = Quiet[ToString[box, InputForm]]},
+      If[StringQ[s], s, "?"]]
+  ]];
+
+(* FormBox を TeX 文字列に変換 *)
+iDocFormBoxToTeX[FormBox[content_, TraditionalForm]] :=
+  iDocBoxToTeX[content];
+iDocFormBoxToTeX[FormBox[content_, _]] :=
+  iDocBoxToTeX[content];
+iDocFormBoxToTeX[other_] := iDocBoxToTeX[other];
+
+(* 単一の Box 要素 → TeX *)
+iDocSingleBoxToTeX[s_String] := s;
+iDocSingleBoxToTeX[FormBox[content_, _]] := iDocFormBoxToTeX[FormBox[content, TraditionalForm]];
+iDocSingleBoxToTeX[Cell[BoxData[content_], "InlineFormula", ___]] := iDocBoxToTeX[content];
+iDocSingleBoxToTeX[Cell[BoxData[content_], ___]] := iDocBoxToTeX[content];
+iDocSingleBoxToTeX[StyleBox[content_, ___]] := iDocSingleBoxToTeX[content];
+iDocSingleBoxToTeX[ButtonBox[content_, ___]] := iDocSingleBoxToTeX[content];
+iDocSingleBoxToTeX[box_] := iDocBoxToTeX[box];
+
+(* TextData 内の要素を走査して文字列 + TeX に変換 *)
+iDocTextDataToString[text_String, format_String] := text;
+
+iDocTextDataToString[TextData[elems_List], format_String] :=
+  StringJoin[iDocElementToString[#, format] & /@ elems];
+
+iDocTextDataToString[TextData[elem_], format_String] :=
+  iDocElementToString[elem, format];
+
+iDocTextDataToString[other_, _] :=
+  If[StringQ[other], other, ToString[other, InputForm]];
+
+(* 個別要素の変換 *)
+iDocElementToString[s_String, _] := s;
+
+(* インライン数式: FormBox *)
+iDocElementToString[Cell[BoxData[FormBox[content_, TraditionalForm]], "InlineMath"|"InlineFormula", ___], format_String] :=
+  Module[{tex = iDocFormBoxToTeX[FormBox[content, TraditionalForm]]},
+    If[format === "markdown", "$" <> tex <> "$", "\\(" <> tex <> "\\)"]
+  ];
+
+iDocElementToString[Cell[BoxData[content_], "InlineMath"|"InlineFormula", ___], format_String] :=
+  Module[{tex = iDocBoxToTeX[content]},
+    If[format === "markdown", "$" <> tex <> "$", "\\(" <> tex <> "\\)"]
+  ];
+
+(* 一般的な InlineCell *)
+iDocElementToString[Cell[BoxData[content_], opts___], format_String] :=
+  Module[{tex = iDocBoxToTeX[content]},
+    If[format === "markdown", "$" <> tex <> "$", "\\(" <> tex <> "\\)"]
+  ];
+
+(* StyleBox: ボールド、イタリック等 *)
+iDocElementToString[StyleBox[content_, opts___], format_String] :=
+  Module[{text = iDocSingleBoxToTeX[content], isBold, isItalic},
+    isBold = MemberQ[{opts}, FontWeight -> "Bold" | Bold];
+    isItalic = MemberQ[{opts}, FontSlant -> "Italic" | Italic];
+    If[format === "markdown",
+      If[isBold && isItalic, "***" <> text <> "***",
+        If[isBold, "**" <> text <> "**",
+          If[isItalic, "*" <> text <> "*", text]]],
+      If[isBold, "\\textbf{" <> text <> "}",
+        If[isItalic, "\\textit{" <> text <> "}", text]]]
+  ];
+
+(* FormBox（直接出現） *)
+iDocElementToString[FormBox[content_, form_], format_String] :=
+  Module[{tex = iDocFormBoxToTeX[FormBox[content, form]]},
+    If[format === "markdown", "$" <> tex <> "$", "\\(" <> tex <> "\\)"]
+  ];
+
+(* ButtonBox (ハイパーリンク等) *)
+iDocElementToString[ButtonBox[label_, ___, ButtonData -> {URL[url_], ___}, ___], format_String] :=
+  If[format === "markdown",
+    "[" <> iDocSingleBoxToTeX[label] <> "](" <> url <> ")",
+    "\\href{" <> url <> "}{" <> iDocSingleBoxToTeX[label] <> "}"];
+
+iDocElementToString[other_, format_String] :=
+  Module[{tex = iDocSingleBoxToTeX[other]},
+    If[StringQ[tex], tex, ""]
+  ];
+
+(* ============================================================
+   エクスポート: 画像処理
+   ============================================================ *)
+
+(* セル内の画像種別を判定: "raster", "vector", "none" *)
+iDocImageType[cellExpr_] :=
+  Which[
+    Length[Cases[cellExpr, _RasterBox, Infinity]] > 0, "raster",
+    Length[Cases[cellExpr, _GraphicsBox | _Graphics3DBox, Infinity]] > 0, "vector",
+    True, "none"
+  ];
+
+(* セルの画像をファイルにエクスポートする。
+   戻り値: エクスポートされたファイルパス、または $Failed *)
+iDocExportCellImage[nb_NotebookObject, cellIdx_Integer, outDir_String,
+    baseName_String] :=
+  Module[{cellExpr, imgType, filePath, cell},
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    imgType = iDocImageType[cellExpr];
+    Which[
+      imgType === "raster",
+        (* ラスター画像: PNG で出力 *)
+        filePath = FileNameJoin[{outDir, baseName <> ".png"}];
+        NBAccess`NBCellRasterize[nb, cellIdx, filePath];
+        If[FileExistsQ[filePath], filePath, $Failed],
+      imgType === "vector",
+        (* ベクター画像: PDF で出力 (ベクター品質維持) *)
+        filePath = FileNameJoin[{outDir, baseName <> ".pdf"}];
+        cell = Module[{c = iResolveExportCell[nb, cellIdx]},
+          If[c === $Failed, Return[$Failed]]; c];
+        (* まず NotebookRead の結果から Graphics 式を抽出して PDF Export を試みる *)
+        Module[{graphics},
+          graphics = Cases[cellExpr, g_Graphics | g_Graphics3D, Infinity];
+          If[Length[graphics] > 0,
+            Quiet[Export[filePath, First[graphics], "PDF"]],
+            (* Graphics 式が直接取れない場合は FrontEnd 経由で PDF 化 *)
+            Quiet[FrontEndExecute[
+              FrontEnd`ExportPacket[cell, "PDF",
+                GraphicsOutput -> "PDF",
+                ImageResolution -> 300]]] /;
+              False; (* FrontEnd`ExportPacket は戻り値処理が複雑なため、
+                        代替として Rasterize → PDF を使う *)
+            Quiet[Export[filePath, Rasterize[cell, ImageResolution -> 300], "PDF"]]]];
+        (* フォールバック: PDF 出力に失敗した場合は PNG *)
+        If[!FileExistsQ[filePath],
+          filePath = FileNameJoin[{outDir, baseName <> ".png"}];
+          Quiet[Export[filePath, Rasterize[cell, ImageResolution -> 300], "PNG"]]];
+        If[FileExistsQ[filePath], filePath, $Failed],
+      True,
+        $Failed
+    ]
+  ];
+
+(* セルオブジェクトを解決 (NBAccess の iResolveCell に相当するが、
+   Private なので簡易版を用意) *)
+iResolveExportCell[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{cells},
+    cells = Cells[nb];
+    If[cellIdx < 1 || cellIdx > Length[cells], $Failed, cells[[cellIdx]]]
+  ];
+
+(* ============================================================
+   エクスポート: Input セル → コードブロック
+   ============================================================ *)
+
+iDocInputCellToCode[nb_NotebookObject, cellIdx_Integer, format_String] :=
+  Module[{text},
+    text = NBAccess`NBCellGetText[nb, cellIdx];
+    If[!StringQ[text], text = NBAccess`NBCellReadInputText[nb, cellIdx]];
+    If[!StringQ[text], Return[""]];
+    If[format === "markdown",
+      "```mathematica\n" <> text <> "\n```",
+      "\\begin{lstlisting}[language=Mathematica]\n" <> text <> "\n\\end{lstlisting}"]
+  ];
+
+(* ============================================================
+   エクスポート: Output セル処理
+   ============================================================ *)
+
+iDocOutputCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
+    imgCounter_Integer, format_String] :=
+  Module[{cellExpr, hasImage, text, imgFile, imgName},
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    hasImage = NBAccess`NBCellHasImage[cellExpr];
+    If[hasImage,
+      (* 画像を含む Output: 画像としてエクスポート *)
+      imgName = "img_" <> ToString[imgCounter];
+      imgFile = iDocExportCellImage[nb, cellIdx, outDir, imgName];
+      If[StringQ[imgFile],
+        Module[{relPath = FileNameTake[imgFile]},
+          If[format === "markdown",
+            "![" <> imgName <> "](" <> relPath <> ")",
+            "\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.8\\textwidth]{" <>
+              relPath <> "}\n\\end{figure}"]],
+        (* 画像エクスポート失敗: テキストにフォールバック *)
+        text = NBAccess`NBCellGetText[nb, cellIdx];
+        If[StringQ[text], text, ""]],
+      (* テキストのみの Output *)
+      text = NBAccess`NBCellGetText[nb, cellIdx];
+      If[StringQ[text] && StringTrim[text] =!= "",
+        If[format === "markdown",
+          "```\n" <> text <> "\n```",
+          "\\begin{verbatim}\n" <> text <> "\n\\end{verbatim}"],
+        ""]
+    ]
+  ];
+
+(* ============================================================
+   エクスポート: ディスプレイ数式セル (DisplayFormula 等)
+   ============================================================ *)
+
+iDocDisplayMathToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
+  Module[{cellExpr, content, tex},
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[cellExpr === $Failed, Return[""]];
+    (* Cell[BoxData[...], ...] からコンテンツを取得 *)
+    content = cellExpr /. Cell[c_, ___] :> c;
+    If[Head[content] === BoxData, content = First[content]];
+    tex = iDocBoxToTeX[content];
+    If[format === "markdown",
+      "\n$$\n" <> tex <> "\n$$\n",
+      "\n\\[\n" <> tex <> "\n\\]\n"]
+  ];
+
+(* ============================================================
+   エクスポート: テキストセル処理
+   ============================================================ *)
+
+iDocTextCellToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
+  Module[{style, cellExpr, content, text, level},
+    style = NBAccess`NBCellStyle[nb, cellIdx];
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[cellExpr === $Failed, Return[""]];
+
+    (* セル内容を取得 *)
+    content = cellExpr /. Cell[c_, ___] :> c;
+
+    (* テキスト変換 *)
+    text = Which[
+      StringQ[content],
+        content,
+      Head[content] === TextData,
+        iDocTextDataToString[content, format],
+      Head[content] === BoxData,
+        (* 数式セル *)
+        Module[{tex = iDocBoxToTeX[First[content]]},
+          If[format === "markdown",
+            "$" <> tex <> "$",
+            "\\(" <> tex <> "\\)"]],
+      True,
+        NBAccess`NBCellGetText[nb, cellIdx]
+    ];
+    If[!StringQ[text], text = ""];
+
+    (* スタイルに応じたフォーマット *)
+    Switch[style,
+      "Title",
+        If[format === "markdown", "# " <> text, "\\title{" <> text <> "}"],
+      "Subtitle",
+        If[format === "markdown", "## " <> text, "\\subtitle{" <> text <> "}"],
+      "Chapter",
+        If[format === "markdown", "# " <> text, "\\chapter{" <> text <> "}"],
+      "Section",
+        If[format === "markdown", "## " <> text, "\\section{" <> text <> "}"],
+      "Subsection",
+        If[format === "markdown", "### " <> text, "\\subsection{" <> text <> "}"],
+      "Subsubsection",
+        If[format === "markdown", "#### " <> text, "\\subsubsection{" <> text <> "}"],
+      "Item",
+        If[format === "markdown", "- " <> text, "%%ITEMIZE%%\\item " <> text],
+      "Subitem",
+        If[format === "markdown", "  - " <> text, "%%SUBITEMIZE%%  \\item " <> text],
+      "ItemNumbered",
+        If[format === "markdown", "1. " <> text, "%%ENUMERATE%%\\item " <> text],
+      "SubitemNumbered",
+        If[format === "markdown", "   1. " <> text, "%%SUBENUMERATE%%  \\item " <> text],
+      "DisplayFormula" | "DisplayFormulaNumbered",
+        iDocDisplayMathToExport[nb, cellIdx, format],
+      _,
+        text
+    ]
+  ];
+
+(* ============================================================
+   エクスポート: メイン関数
+   ============================================================ *)
+
+(* 単一セルをエクスポート文字列に変換 *)
+iDocCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
+    imgCounter_Integer, format_String] :=
+  Module[{style, cellExpr, hasImage, result, mode, showTrans},
+    style = NBAccess`NBCellStyle[nb, cellIdx];
+
+    (* Note セルはスキップ *)
+    If[iDocIsNoteCell[nb, cellIdx], Return[{Null, imgCounter}]];
+
+    (* ドキュメントモード確認: idea モードならパラグラフ版を使う *)
+    mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+    If[mode === "idea",
+      (* パラグラフ (展開済み) があればそちらを使ってテキストを一時差し替え *)
+      Module[{para = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate]},
+        If[StringQ[para] && StringTrim[para] =!= "",
+          (* パラグラフ版のテキストでテキストセルとして出力 *)
+          Return[{If[format === "markdown", para,  para], imgCounter}]]]];
+
+    (* スタイルに応じた処理 *)
+    Which[
+      (* Input セル → コードブロック *)
+      style === "Input",
+        {iDocInputCellToCode[nb, cellIdx, format], imgCounter},
+
+      (* Output/Print セル → 画像 or テキスト *)
+      MemberQ[{"Output", "Print", "Message", "Echo"}, style],
+        cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+        hasImage = NBAccess`NBCellHasImage[cellExpr];
+        result = iDocOutputCellToExport[nb, cellIdx, outDir,
+          imgCounter, format];
+        {result, If[hasImage, imgCounter + 1, imgCounter]},
+
+      (* DisplayFormula 等 *)
+      MemberQ[{"DisplayFormula", "DisplayFormulaNumbered"}, style],
+        {iDocDisplayMathToExport[nb, cellIdx, format], imgCounter},
+
+      (* テキスト系セル *)
+      MemberQ[{"Title", "Subtitle", "Chapter", "Section", "Subsection",
+               "Subsubsection", "Text", "Item", "Subitem",
+               "ItemNumbered", "SubitemNumbered", "ItemParagraph",
+               "SubitemParagraph"}, style],
+        (* テキストセルでも画像を含む場合がある *)
+        cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+        If[NBAccess`NBCellHasImage[cellExpr],
+          Module[{imgName = "img_" <> ToString[imgCounter],
+                  imgFile, textPart, imgPart},
+            imgFile = iDocExportCellImage[nb, cellIdx, outDir, imgName];
+            textPart = iDocTextCellToExport[nb, cellIdx, format];
+            imgPart = If[StringQ[imgFile],
+              Module[{relPath = FileNameTake[imgFile]},
+                If[format === "markdown",
+                  "\n![" <> imgName <> "](" <> relPath <> ")",
+                  "\n\\includegraphics[width=0.8\\textwidth]{" <> relPath <> "}"]],
+              ""];
+            {textPart <> imgPart, imgCounter + 1}],
+          {iDocTextCellToExport[nb, cellIdx, format], imgCounter}],
+
+      (* それ以外: スキップ *)
+      True,
+        {Null, imgCounter}
+    ]
+  ];
+
+(* Markdown エクスポート *)
+DocExportMarkdown[nb_NotebookObject] :=
+  Module[{outDir, nCells, lines = {}, imgCounter = 1,
+          result, line, outFile, baseName},
+    outDir = iDocEnsureExportDir[nb, "md"];
+    If[outDir === $Failed,
+      MessageDialog[iL[
+        "ノートブックのディレクトリを取得できません。\n先にノートブックを保存してください。",
+        "Cannot get notebook directory.\nPlease save the notebook first."]];
+      Return[$Failed]];
+    baseName = iDocNotebookBaseName[nb];
+    NBAccess`NBInvalidateCellsCache[nb];
+    nCells = NBAccess`NBCellCount[nb];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["Markdown エクスポート中...", "Exporting Markdown..."]];
+
+    Do[
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["エクスポート中: ", "Exporting: "] <> ToString[i] <> "/" <> ToString[nCells]];
+      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "markdown"];
+      If[line =!= Null && StringQ[line] && StringTrim[line] =!= "",
+        AppendTo[lines, line]],
+    {i, nCells}];
+
+    (* ファイル出力 *)
+    outFile = FileNameJoin[{outDir, baseName <> ".md"}];
+    Export[outFile, StringRiffle[lines, "\n\n"], "Text", CharacterEncoding -> "UTF-8"];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["Markdown エクスポート完了: " <> outFile,
+         "Markdown export complete: " <> outFile]];
+    RunScheduledTask[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
+
+    outFile
+  ];
+
+(* LaTeX リスト環境の統合ポストプロセッサ。
+   連続する %%ITEMIZE%%\item 行を \begin{itemize}...\end{itemize} にまとめる。 *)
+iDocPostProcessLaTeXLists[text_String] :=
+  Module[{lines, result = {}, i = 1, n, envTag, envName, block},
+    lines = StringSplit[text, "\n"];
+    n = Length[lines];
+    While[i <= n,
+      Which[
+        StringStartsQ[lines[[i]], "%%ITEMIZE%%"],
+          (* 連続する ITEMIZE 行を収集 *)
+          block = {"\\begin{itemize}"};
+          While[i <= n && StringStartsQ[lines[[i]], "%%ITEMIZE%%"],
+            AppendTo[block,
+              StringReplace[lines[[i]], "%%ITEMIZE%%" -> ""]];
+            i++];
+          AppendTo[block, "\\end{itemize}"];
+          AppendTo[result, StringRiffle[block, "\n"]],
+        StringStartsQ[lines[[i]], "%%SUBITEMIZE%%"],
+          block = {"\\begin{itemize}"};
+          While[i <= n && StringStartsQ[lines[[i]], "%%SUBITEMIZE%%"],
+            AppendTo[block,
+              StringReplace[lines[[i]], "%%SUBITEMIZE%%" -> ""]];
+            i++];
+          AppendTo[block, "\\end{itemize}"];
+          AppendTo[result, StringRiffle[block, "\n"]],
+        StringStartsQ[lines[[i]], "%%ENUMERATE%%"],
+          block = {"\\begin{enumerate}"};
+          While[i <= n && StringStartsQ[lines[[i]], "%%ENUMERATE%%"],
+            AppendTo[block,
+              StringReplace[lines[[i]], "%%ENUMERATE%%" -> ""]];
+            i++];
+          AppendTo[block, "\\end{enumerate}"];
+          AppendTo[result, StringRiffle[block, "\n"]],
+        StringStartsQ[lines[[i]], "%%SUBENUMERATE%%"],
+          block = {"\\begin{enumerate}"};
+          While[i <= n && StringStartsQ[lines[[i]], "%%SUBENUMERATE%%"],
+            AppendTo[block,
+              StringReplace[lines[[i]], "%%SUBENUMERATE%%" -> ""]];
+            i++];
+          AppendTo[block, "\\end{enumerate}"];
+          AppendTo[result, StringRiffle[block, "\n"]],
+        True,
+          AppendTo[result, lines[[i]]];
+          i++
+      ]];
+    StringRiffle[result, "\n"]
+  ];
+
+(* LaTeX エクスポート *)
+DocExportLaTeX[nb_NotebookObject] :=
+  Module[{outDir, nCells, lines = {}, imgCounter = 1,
+          result, line, outFile, baseName, header, footer},
+    outDir = iDocEnsureExportDir[nb, "LaTeX"];
+    If[outDir === $Failed,
+      MessageDialog[iL[
+        "ノートブックのディレクトリを取得できません。\n先にノートブックを保存してください。",
+        "Cannot get notebook directory.\nPlease save the notebook first."]];
+      Return[$Failed]];
+    baseName = iDocNotebookBaseName[nb];
+    NBAccess`NBInvalidateCellsCache[nb];
+    nCells = NBAccess`NBCellCount[nb];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["LaTeX エクスポート中...", "Exporting LaTeX..."]];
+
+    Do[
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["エクスポート中: ", "Exporting: "] <> ToString[i] <> "/" <> ToString[nCells]];
+      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "latex"];
+      If[line =!= Null && StringQ[line] && StringTrim[line] =!= "",
+        AppendTo[lines, line]],
+    {i, nCells}];
+
+    (* LaTeX ヘッダー・フッター *)
+    header = "\\documentclass[a4paper,11pt]{article}\n" <>
+      "\\usepackage[utf8]{inputenc}\n" <>
+      "\\usepackage{amsmath,amssymb,amsfonts}\n" <>
+      "\\usepackage{graphicx}\n" <>
+      "\\usepackage{hyperref}\n" <>
+      "\\usepackage{listings}\n" <>
+      "\\usepackage[margin=2.5cm]{geometry}\n" <>
+      "\\usepackage{CJKutf8}\n" <>
+      "\\lstset{basicstyle=\\ttfamily\\small,breaklines=true,frame=single,\n" <>
+      "  columns=fullflexible,keepspaces=true}\n" <>
+      "\n\\begin{document}\n" <>
+      "\\begin{CJK}{UTF8}{min}\n";
+    footer = "\n\\end{CJK}\n\\end{document}\n";
+
+    (* ファイル出力 *)
+    outFile = FileNameJoin[{outDir, baseName <> ".tex"}];
+    Module[{body = StringRiffle[lines, "\n\n"]},
+      body = iDocPostProcessLaTeXLists[body];
+      Export[outFile, header <> body <> footer,
+        "Text", CharacterEncoding -> "UTF-8"]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["LaTeX エクスポート完了: " <> outFile,
+         "LaTeX export complete: " <> outFile]];
+    RunScheduledTask[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
+
+    outFile
+  ];
+
+(* パレットからのエクスポートアクション *)
+iDocExportMarkdownAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocExportMarkdown[nb]
+  ];
+
+iDocExportLaTeXAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocExportLaTeX[nb]
+  ];
+
+iDocInsertNoteAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocInsertNote[nb]
+  ];
+
+(* ============================================================
+   パレット設定
    ============================================================ *)
 
 (* ============================================================
-   \:30e1\:30a4\:30f3\:30d1\:30ec\:30c3\:30c8
+   メインパレット
    ============================================================ *)
 
 ShowDocPalette[] := (
   If[$docPalette =!= None, Quiet@NotebookClose[$docPalette]];
-  (* \:521d\:671f\:30ed\:30fc\:30c9: \:73fe\:5728\:306e\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:304b\:3089\:8a2d\:5b9a\:3092\:8aad\:307f\:8fbc\:3080 *)
+  (* 初期ロード: 現在のノートブックから設定を読み込む *)
   Module[{initNb = Quiet[InputNotebook[]]},
     If[Head[initNb] === NotebookObject,
       ClaudeCode`LoadPaletteSettings[initNb]]];
   $docPalette = CreatePalette[
     DynamicModule[{lastNb = None},
     Dynamic[
-      (* \:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:5207\:66ff\:3092\:691c\:51fa\:3057\:3066\:8a2d\:5b9a\:3092\:30ea\:30ed\:30fc\:30c9 *)
+      (* ノートブック切替を検出して設定をリロード *)
       Module[{curNb = Quiet[InputNotebook[]]},
         If[Head[curNb] === NotebookObject &&
            Quiet[CurrentValue[curNb, WindowClickSelect]] =!= False &&
@@ -1151,40 +1755,54 @@ ShowDocPalette[] := (
     Column[{
       Style["Documentation", Bold, 11, RGBColor[0.2, 0.5, 0.3]],
 
-      (* -- \:57f7\:7b46\:30c4\:30fc\:30eb -- *)
-      Style[iL[" \:57f7\:7b46\:30c4\:30fc\:30eb", " Writing Tools"], Bold, 8, GrayLevel[0.3]],
-      iDocButton[iL["\[FilledRightTriangle] \:5c55\:958b", "\[FilledRightTriangle] Expand"],
+      (* -- 執筆ツール -- *)
+      Style[iL[" 執筆ツール", " Writing Tools"], Bold, 8, GrayLevel[0.3]],
+      iDocButton[iL["\[FilledRightTriangle] 展開", "\[FilledRightTriangle] Expand"],
         RGBColor[0.2, 0.55, 0.35],
         iDocExpandSelected[]],
-      iDocButton[iL["\[LeftRightArrow] \:5207\:66ff", "\[LeftRightArrow] Toggle"],
-        RGBColor[0.35, 0.45, 0.65],
-        iDocToggleSelected[]],
-      iDocButton[iL["\[RightGuillemet] \:7ffb\:8a33", "\[RightGuillemet] Translate"],
+      iDocButton[iL["\[RightGuillemet] 翻訳", "\[RightGuillemet] Translate"],
         RGBColor[0.3, 0.4, 0.65],
         iDocTranslateSelected[]],
-      iDocButton[iL["\[Equilibrium] \:540c\:671f", "\[Equilibrium] Sync"],
+      iDocButton[iL["\[Equilibrium] 同期", "\[Equilibrium] Sync"],
         RGBColor[0.45, 0.35, 0.6],
         iDocSyncSelected[]],
+      Spacer[1],
+      iDocButton[iL["\[LeftRightArrow] 切替", "\[LeftRightArrow] Toggle"],
+        RGBColor[0.35, 0.45, 0.65],
+        iDocToggleSelected[]],
+      iDocButton[iL["\[FilledSmallSquare] メモ", "\[FilledSmallSquare] Note"],
+        RGBColor[0.7, 0.63, 0.35],
+        iDocInsertNoteAction[]],
       Spacer[2],
 
-      (* -- \:4e00\:62ec\:8868\:793a\:5207\:66ff -- *)
-      Style[iL[" \:4e00\:62ec\:8868\:793a", " View All"], Bold, 8, GrayLevel[0.3]],
-      iDocButton[iL["\[Ellipsis] \:5168\:30d7\:30ed\:30f3\:30d7\:30c8", "\[Ellipsis] All Prompts"],
+      (* -- 一括表示切替 -- *)
+      Style[iL[" 一括表示", " View All"], Bold, 8, GrayLevel[0.3]],
+      iDocButton[iL["\[Ellipsis] 全プロンプト", "\[Ellipsis] All Prompts"],
         RGBColor[0.65, 0.5, 0.2],
         iDocShowAllAs["idea"]],
-      iDocButton[iL["\[Paragraph] \:5168\:30d1\:30e9\:30b0\:30e9\:30d5", "\[Paragraph] All Paragraphs"],
+      iDocButton[iL["\[Paragraph] 全パラグラフ", "\[Paragraph] All Paragraphs"],
         RGBColor[0.25, 0.5, 0.4],
         iDocShowAllAs["paragraph"]],
-      iDocButton[iL["\[CapitalAHat] \:5168\:7ffb\:8a33", "\[CapitalAHat] All Translations"],
+      iDocButton[iL["\[CapitalAHat] 全翻訳", "\[CapitalAHat] All Translations"],
         RGBColor[0.3, 0.4, 0.65],
         iDocShowAllAs["translation"]],
       Spacer[2],
 
-      (* -- \:8a2d\:5b9a (ClaudeCode \:30d1\:30ec\:30c3\:30c8\:3068\:5171\:6709: \:516c\:958b\:30a2\:30af\:30bb\:30b5\:7d4c\:7531) -- *)
-      Style[iL[" \:8a2d\:5b9a", " Settings"], Bold, 8, GrayLevel[0.3]],
+      (* -- エクスポート -- *)
+      Style[iL[" エクスポート", " Export"], Bold, 8, GrayLevel[0.3]],
+      iDocButton[iL["\[RightArrowBar] Markdown", "\[RightArrowBar] Markdown"],
+        RGBColor[0.3, 0.5, 0.55],
+        iDocExportMarkdownAction[]],
+      iDocButton[iL["\[RightArrowBar] LaTeX", "\[RightArrowBar] LaTeX"],
+        RGBColor[0.4, 0.4, 0.55],
+        iDocExportLaTeXAction[]],
+      Spacer[2],
+
+      (* -- 設定 (ClaudeCode パレットと共有: 公開アクセサ経由) -- *)
+      Style[iL[" 設定", " Settings"], Bold, 8, GrayLevel[0.3]],
       Dynamic[
         Button[
-          Style[iL["\:30e2\:30c7\:30eb: ", "Model: "] <>
+          Style[iL["モデル: ", "Model: "] <>
             Switch[ClaudeCode`GetPaletteModel[],
               "opus", "Opus", "sonnet", "Sonnet", _, "Default"],
             9, Bold, GrayLevel[0.2]],
@@ -1197,7 +1815,7 @@ ShowDocPalette[] := (
           Appearance -> "Frameless"]],
       Dynamic[
         Button[
-          Style[iL["\:30a8\:30d5\:30a9\:30fc\:30c8: ", "Effort: "] <>
+          Style[iL["エフォート: ", "Effort: "] <>
             Switch[ClaudeCode`GetPaletteEffort[],
               "low", "Low", "medium", "Medium", "high", "High", "max", "Max", _, "Medium"],
             9, Bold, GrayLevel[0.2]],
@@ -1210,17 +1828,17 @@ ShowDocPalette[] := (
           Appearance -> "Frameless"]],
       Dynamic[
         Button[
-          Style[iL["\:8ab2\:91d1API: ", "Paid API: "] <>
+          Style[iL["課金API: ", "Paid API: "] <>
             If[ClaudeCode`GetPaletteFallback[],
-              iL["\:8a31\:53ef", "On"],
-              iL["\:7981\:6b62", "Off"]],
+              iL["許可", "On"],
+              iL["禁止", "Off"]],
             9, Bold, GrayLevel[0.2]],
           (ClaudeCode`SetPaletteFallback[!ClaudeCode`GetPaletteFallback[]];
            ClaudeCode`SavePaletteSettings[InputNotebook[]]),
           Appearance -> "Frameless"]],
       Spacer[2],
 
-      (* -- \:30b9\:30c6\:30fc\:30bf\:30b9 -- *)
+      (* -- ステータス -- *)
       Dynamic[
         With[{nb = InputNotebook[]},
           Style[
@@ -1259,10 +1877,10 @@ ShowDocPalette[] := (
 End[];
 EndPackage[];
 
-(* \:30d1\:30c3\:30b1\:30fc\:30b8\:30ed\:30fc\:30c9\:6642\:306b\:30d1\:30ec\:30c3\:30c8\:3092\:81ea\:52d5\:8868\:793a *)
+(* パッケージロード時にパレットを自動表示 *)
 Documentation`ShowDocPalette[];
 
-(* \:30d1\:30ec\:30c3\:30c8\:30e1\:30cb\:30e5\:30fc\:306b\:767b\:9332\:ff08claudecode.wl \:306e AddToPalettesMenu \:3068\:540c\:3058\:30d1\:30bf\:30fc\:30f3\:ff09 *)
+(* パレットメニューに登録（claudecode.wl の AddToPalettesMenu と同じパターン） *)
 Module[{itemList, dummyFunction, tempFunction, temp},
   SetAttributes[FrontEnd`AddMenuCommands, HoldRest];
   MathLink`CallFrontEnd[FrontEnd`ResetMenusPacket[{Automatic}]];
