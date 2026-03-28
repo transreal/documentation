@@ -40,22 +40,76 @@ DocInsertNote::usage =
   "既にスタイル \"Note\" が定義されている場合はそれを使い、\n" <>
   "なければカスタム定義のNoteセルを挿入する。";
 
+DocInsertDictionary::usage =
+  "DocInsertDictionary[nb] は現在のカーソル位置に Dictionary スタイルのセルを挿入する。\n" <>
+  "翻訳時に用語の対応を指定するための辞書セル。\n" <>
+  "形式: {{<<Japanese>>, <<English>>, <<Context>>}, {\"用語1\", \"term1\", \"文脈\"}, ...}\n" <>
+  "1行目はヘッダー（<<>> で囲む）、2行目以降が Context における用語対応。";
+
+DocInsertDirective::usage =
+  "DocInsertDirective[nb] は現在のカーソル位置に Directive スタイルのセルを挿入する。\n" <>
+  "展開・翻訳・同期の実行時に LLM が順守すべき指示を記載するセル。\n" <>
+  "複数の Directive セルを配置可能。";
+
+DocInsertBibliography::usage =
+  "DocInsertBibliography[nb] は現在のカーソル位置に Bibliography スタイルのセルを挿入する。\n" <>
+  "参考文献リストを管理する。\n" <>
+  "形式: {{<<Key>>, <<Author>>, <<Year>>, <<Title>>}, {\"key\", \"author\", \"year\", \"title\"}, ...}\n" <>
+  "本文中で <<cite:key>> と記述するとエクスポート時に自動変換される。";
+
+DocEditFigureMeta::usage =
+  "DocEditFigureMeta[nb, cellIdx] は画像セルの図メタデータを編集する。\n" <>
+  "ラベル（参照用キー）とキャプションを設定するダイアログを表示する。\n" <>
+  "本文中で <<fig:label>> と記述するとエクスポート時に自動変換される。";
+
+DocEditRefSources::usage =
+  "DocEditRefSources[nb, cellIdx] はセルの依存資料を編集する。\n" <>
+  "アタッチされた PDF のうち、そのセルの内容生成に使われた資料と\n" <>
+  "参照ページ番号を設定する。LaTeX+Math エクスポート時に\n" <>
+  "該当ページのみを LLM に送付してトークン消費を削減する。";
+
+DocAutoInsertCitations::usage =
+  "DocAutoInsertCitations[nb] はノートブック内の全セルに自動引用を挿入する。\n" <>
+  "依存資料（refSources）から文献リストを構築し、\n" <>
+  "LLM が本文中の適切な位置に <<cite:key>> マーカーを挿入する。\n" <>
+  "Bibliography セルが存在しなければ末尾に自動生成する。";
+
 DocExportMarkdown::usage =
   "DocExportMarkdown[nb] はノートブックを Markdown 形式でエクスポートする。\n" <>
   "出力先: NotebookDirectory[] / <ノートブック名>_md/\n" <>
-  "Note スタイルのセルは出力から除外される。\n" <>
+  "Note, Dictionary, Directive, Bibliography スタイルのセルは出力から除外される。\n" <>
   "画像: ラスター→PNG, ベクター/計算結果→PDF で保存。\n" <>
+  "<<fig:label>> と <<cite:key>> は自動変換される。\n" <>
   "Input セルはコードブロック、数式は TeX に変換される。";
 
 DocExportLaTeX::usage =
   "DocExportLaTeX[nb] はノートブックを LaTeX 形式でエクスポートする。\n" <>
   "出力先: NotebookDirectory[] / <ノートブック名>_LaTeX/\n" <>
-  "Note スタイルのセルは出力から除外される。\n" <>
+  "Note, Dictionary, Directive, Bibliography スタイルのセルは出力から除外される。\n" <>
   "画像: ラスター→PNG, ベクター/計算結果→PDF で保存。\n" <>
-  "Input セルはコードブロック、数式は TeX に変換される。";
+  "<<fig:label>> は \\ref{fig:label} に、<<cite:key>> は \\cite{key} に変換される。\n" <>
+  "Options: \"MathFormat\" -> False（True で LLM による数式自動フォーマット）";
+
+DocExportWord::usage =
+  "DocExportWord[nb] はノートブックを Word (.docx) 形式でエクスポートする。\n" <>
+  "内部で DocExportMarkdown を実行し、Pandoc で .docx に変換する。\n" <>
+  "出力先: NotebookDirectory[] / <ノートブック名>_md/<ノートブック名>.docx\n" <>
+  "Pandoc がインストールされている必要がある。\n" <>
+  "Options: \"ReferenceDoc\" -> None（テンプレート .docx ファイルのパス）";
 
 ShowDocPalette::usage =
   "ShowDocPalette[] はドキュメント作成用パレットを表示する。";
+
+DocSplitCell::usage =
+  "DocSplitCell[nb, cellIdx] はカーソル位置でセルを前半・後半に分割する。\n" <>
+  "パラグラフ/翻訳表示中: 表示テキストと保存データを対応位置で分割し、\n" <>
+  "プロンプトがあれば LLM で前半・後半用に再生成する。\n" <>
+  "普通のセル: テキストを単純に分割する。";
+
+DocMergeCells::usage =
+  "DocMergeCells[nb, cellIdxs] は複数セルを単一セルに合併する。\n" <>
+  "テキスト・プロンプト・翻訳をそれぞれ結合し、最初のセルに統合する。\n" <>
+  "モード・スタイルは最初のセルを維持する。";
 
 $DocTranslationLanguage::usage =
   "$DocTranslationLanguage は翻訳先の言語名。\n" <>
@@ -111,6 +165,12 @@ $iDocTagMode = {$iDocTagRoot, "mode"};
 $iDocTagTranslation = {$iDocTagRoot, "translation"};
 $iDocTagTranslationSrc = {$iDocTagRoot, "translationSrc"};
 $iDocTagShowTranslation = {$iDocTagRoot, "showTranslation"};
+$iDocTagExcludeExport = {$iDocTagRoot, "excludeExport"};
+$iDocTagFigLabel = {$iDocTagRoot, "figLabel"};
+$iDocTagFigCaption = {$iDocTagRoot, "figCaption"};
+$iDocTagCleanText = {$iDocTagRoot, "cleanText"};
+$iDocTagCleanMode = {$iDocTagRoot, "cleanMode"};
+$iDocTagRefSources = {$iDocTagRoot, "refSources"};
 
 (* ============================================================
    パレット状態
@@ -294,6 +354,70 @@ iDocCollectContext[nb_NotebookObject, cellIdx_Integer] :=
       "=== End context ===\n\n"]
   ];
 
+(* ノートブック内の Dictionary セルから用語辞書を収集する。
+   翻訳時に LLM が用語対応を遵守するために使う。 *)
+iDocCollectDictionary[nb_NotebookObject] :=
+  Module[{nCells, text, entries = {}},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[iDocIsDictionaryCell[nb, i],
+        text = Quiet[NBAccess`NBCellGetText[nb, i]];
+        If[StringQ[text] && StringLength[text] > 0,
+          AppendTo[entries, text]]],
+    {i, nCells}];
+    If[Length[entries] === 0, "",
+      "=== Dictionary (MUST use these term mappings when translating) ===\n" <>
+      StringRiffle[entries, "\n"] <>
+      "\n=== End Dictionary ===\n\n"]
+  ];
+
+(* ノートブック内の Directive セルから指示を収集する。
+   展開・翻訳・同期時に LLM が遵守すべき指示。 *)
+iDocCollectDirectives[nb_NotebookObject] :=
+  Module[{nCells, text, directives = {}},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[iDocIsDirectiveCell[nb, i],
+        text = Quiet[NBAccess`NBCellGetText[nb, i]];
+        If[StringQ[text] && StringLength[text] > 0,
+          AppendTo[directives, text]]],
+    {i, nCells}];
+    If[Length[directives] === 0, "",
+      "=== Directives (MUST follow these instructions strictly) ===\n" <>
+      StringRiffle[directives, "\n---\n"] <>
+      "\n=== End Directives ===\n\n"]
+  ];
+
+(* Directive セルからエクスポート用のスタイル読み替え規則を解析する。
+   {Subsection -> Section, Subsubsection -> Subsection} のような WL 式を検出。
+   戻り値: Association<|"Subsection" -> "Section", ...|> *)
+iDocParseStyleRemap[nb_NotebookObject] :=
+  Module[{nCells, text, remap = <||>, matches, parsed},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[iDocIsDirectiveCell[nb, i],
+        text = Quiet[NBAccess`NBCellGetText[nb, i]];
+        If[StringQ[text],
+          (* {A -> B, C -> D} パターンを探す *)
+          matches = StringCases[text,
+            RegularExpression["\\{[^{}]*->\\s*[^{}]*\\}"]];
+          Do[
+            parsed = Quiet[ToExpression[m, InputForm, Hold]];
+            parsed = parsed /. Hold[x_] :> x;
+            If[ListQ[parsed],
+              Do[
+                If[Head[rule] === Rule,
+                  Module[{k = rule[[1]], v = rule[[2]]},
+                    (* シンボル名を文字列に変換 *)
+                    If[!StringQ[k], k = ToString[k]];
+                    If[!StringQ[v], v = ToString[v]];
+                    remap[k] = v]],
+              {rule, parsed}]],
+          {m, matches}]]],
+    {i, nCells}];
+    remap
+  ];
+
 iDocExpandPromptFn[ideaText_String, context_String:""] :=
   context <>
   iL[
@@ -303,9 +427,16 @@ iDocExpandPromptFn[ideaText_String, context_String:""] :=
     "- 元の意味と意図を忠実に保つ\n" <>
     "- 深み、明確さ、プロフェッショナルな文章品質を加える\n" <>
     "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
-    "- 段落のテキストのみを出力し、それ以外（前置きや説明）は一切出力しない\n" <>
+    "- 【最重要】段落の本文テキストのみを出力すること。" <>
+    "「Let me」「まず」「では」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
+    "出力の最初の文字から最後の文字まですべてが段落の本文でなければならない\n" <>
     "- マークダウン記法は使わない\n" <>
     "- ドキュメントコンテキストがある場合は、略語や固有名詞の意味を文脈から判断する\n" <>
+    "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
+    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
+    "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
+    "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
+    "資料を読む過程（「PDFを読みます」等）は絶対に出力に含めない\n" <>
     "- リクエストを実行できない場合（ファイル未検出・情報不足等）は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
     "アイデア:\n" <> ideaText,
     "You are a skilled writer. Develop the following brief idea or phrase " <>
@@ -314,9 +445,17 @@ iDocExpandPromptFn[ideaText_String, context_String:""] :=
     "- Maintain the original meaning and intent faithfully\n" <>
     "- Add depth, clarity, and professional quality prose\n" <>
     "- Output language: " <> iDocOutputLanguage[] <> "\n" <>
-    "- Output ONLY the paragraph text, nothing else (no preamble or explanation)\n" <>
+    "- CRITICAL: Output ONLY the paragraph body text. " <>
+    "Do NOT include any preamble, thinking, meta-commentary, or explanation " <>
+    "such as 'Let me...', 'I will...', 'Here is...', 'Based on...'. " <>
+    "The very first character of your output must be the start of the paragraph itself\n" <>
     "- Do not use markdown formatting\n" <>
     "- If document context is provided, use it to disambiguate abbreviations and proper nouns\n" <>
+    "- If Directives are provided, strictly follow their instructions\n" <>
+    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
+    "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
+    "- If attached files are mentioned in context, use their content but NEVER output " <>
+    "your reading process (e.g. 'Let me read the PDF')\n" <>
     "- If you cannot fulfill the request (file not found, insufficient info, etc.), output ONLY: [ERROR]: followed by the reason\n\n" <>
     "Idea:\n" <> ideaText
   ];
@@ -331,9 +470,16 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "- 以前の段落の文体・構成・ユーザーの修正を可能な限り踏襲する\n" <>
     "- 修正されたアイデアの内容変更に従って必要箇所を書き換える\n" <>
     "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
-    "- 段落のテキストのみを出力し、それ以外（前置きや説明）は一切出力しない\n" <>
+    "- 【最重要】段落の本文テキストのみを出力すること。" <>
+    "「Let me」「まず」「では」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
+    "出力の最初の文字から最後の文字まですべてが段落の本文でなければならない\n" <>
     "- マークダウン記法は使わない\n" <>
     "- ドキュメントコンテキストがある場合は、略語や固有名詞の意味を文脈から判断する\n" <>
+    "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
+    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
+    "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
+    "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
+    "資料を読む過程は絶対に出力に含めない\n" <>
     "- リクエストを実行できない場合（ファイル未検出・情報不足等）は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
     "修正されたアイデア:\n" <> ideaText <>
     "\n\n以前の段落:\n" <> prevParagraph,
@@ -343,12 +489,132 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "- Preserve the style, structure, and user edits of the previous paragraph as much as possible\n" <>
     "- Update only the parts that need to change according to the updated idea\n" <>
     "- Output language: " <> iDocOutputLanguage[] <> "\n" <>
-    "- Output ONLY the paragraph text, nothing else (no preamble or explanation)\n" <>
+    "- CRITICAL: Output ONLY the paragraph body text. " <>
+    "Do NOT include any preamble, thinking, meta-commentary, or explanation " <>
+    "such as 'Let me...', 'I will...', 'Here is...', 'Based on...'. " <>
+    "The very first character of your output must be the start of the paragraph itself\n" <>
     "- Do not use markdown formatting\n" <>
     "- If document context is provided, use it to disambiguate abbreviations and proper nouns\n" <>
+    "- If Directives are provided, strictly follow their instructions\n" <>
+    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
+    "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
+    "- If attached files are mentioned in context, use their content but NEVER output your reading process\n" <>
     "- If you cannot fulfill the request (file not found, insufficient info, etc.), output ONLY: [ERROR]: followed by the reason\n\n" <>
     "Updated idea:\n" <> ideaText <>
     "\n\nPrevious paragraph:\n" <> prevParagraph
+  ];
+
+(* ============================================================
+   セル書き込みヘルパー: 編集追跡付き
+   ============================================================ *)
+
+(* テキストを書き込み、クリーンコピーを保存する。
+   切替時に編集検出に使う。 *)
+iDocWriteAndTrack[nb_NotebookObject, cellIdx_Integer, text_String] := (
+  NBAccess`NBInvalidateCellsCache[nb];
+  NBAccess`NBCellWriteText[nb, cellIdx, text];
+  NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagCleanText, text];
+  NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagCleanMode,
+    ToString[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode]] <> ":" <>
+    ToString[TrueQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation]]]]);
+
+(* 切替後のバックグラウンド同期。
+   切替前のモードに基づいて、編集された内容を他レイヤーに反映する。 *)
+iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
+    prevMode_String, prevShowTrans_, useFallback_] :=
+  Module[{editedPara, editedIdea, editedTrans, translation, ideaText,
+          paragraph, targetLang, context, directives, dictionary, prompt,
+          privLevel},
+    NBAccess`NBInvalidateCellsCache[nb];
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+    targetLang = iDocTranslationTarget[];
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+
+    Which[
+      (* 前: パラグラフ表示中 (編集済み) → 翻訳を更新 *)
+      prevMode === "paragraph" && !TrueQ[prevShowTrans],
+        (* 切替後: mode="idea", alternate=編集済みパラグラフ *)
+        editedPara = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+        translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+        ideaText = NBAccess`NBCellGetText[nb, cellIdx]; (* 現在はアイデア表示 *)
+        If[StringQ[editedPara] && StringQ[translation] &&
+           StringTrim[translation] =!= "",
+          prompt = iDocReTranslatePromptFn[editedPara, targetLang,
+            translation, If[StringQ[ideaText], ideaText, ""], context];
+          Quiet[CurrentValue[nb, WindowStatusArea] =
+            iL["翻訳を同期中...", "Syncing translation..."]];
+          With[{nb2 = nb, ci = cellIdx, srcPara = editedPara},
+            NBAccess`$NBLLMQueryFunc[prompt,
+              Function[response,
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagTranslation, StringTrim[response]];
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagTranslationSrc, srcPara]];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync done"]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+              nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]],
+
+      (* 前: アイデア表示中 (編集済み) → パラグラフを再展開 *)
+      prevMode === "idea",
+        (* 切替後: mode="paragraph", alternate=編集済みアイデア, text=旧パラグラフ *)
+        editedIdea = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+        paragraph = NBAccess`NBCellGetText[nb, cellIdx]; (* 現在は旧パラグラフ表示 *)
+        If[StringQ[editedIdea] && StringLength[editedIdea] > 0,
+          prompt = iDocReExpandPromptFn[editedIdea, paragraph, context];
+          Quiet[CurrentValue[nb, WindowStatusArea] =
+            iL["パラグラフを再展開中...", "Re-expanding paragraph..."]];
+          With[{nb2 = nb, ci = cellIdx, idea = editedIdea},
+            NBAccess`$NBLLMQueryFunc[prompt,
+              Function[response,
+                Module[{newPara, curMode},
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  newPara = StringTrim[response];
+                  NBAccess`NBInvalidateCellsCache[nb2];
+                  curMode = NBAccess`NBCellGetTaggingRule[nb2, ci, $iDocTagMode];
+                  If[curMode === "paragraph",
+                    (* まだパラグラフ表示中 → 更新 *)
+                    iDocWriteAndTrack[nb2, ci, newPara],
+                    (* アイデア表示中 → alternate を更新 *)
+                    NBAccess`NBCellSetTaggingRule[nb2, ci,
+                      $iDocTagAlternate, newPara]]];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync done"]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+              nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]],
+
+      (* 前: 翻訳表示中 (編集済み) → パラグラフを逆更新 *)
+      TrueQ[prevShowTrans],
+        editedTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+        paragraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
+        ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+        If[StringQ[editedTrans] && StringQ[paragraph],
+          prompt = iDocReverseSyncPromptFn[editedTrans, paragraph,
+            If[StringQ[ideaText], ideaText, ""], iDocOutputLanguage[], context];
+          Quiet[CurrentValue[nb, WindowStatusArea] =
+            iL["パラグラフを逆同期中...", "Reverse-syncing paragraph..."]];
+          With[{nb2 = nb, ci = cellIdx},
+            NBAccess`$NBLLMQueryFunc[prompt,
+              Function[response,
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagTranslationSrc, StringTrim[response]]];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync done"]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+              nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]],
+
+      True, Null
+    ]
   ];
 
 (* ============================================================
@@ -366,11 +632,11 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
 Options[DocExpandIdea] = {Fallback -> False};
 
 DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
-  Module[{mode, prevParagraph, useFallback, promptFn, context},
+  Module[{mode, prevParagraph, useFallback, promptFn, context, dictionary, directives},
     useFallback = TrueQ[OptionValue[Fallback]];
 
-    (* Note セルは対象外 *)
-    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
+    (* Note/Dictionary/Directive セルは対象外 *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
 
     (* 現在のモード確認 (NBAccess 経由) *)
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
@@ -384,8 +650,11 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         "Switch to idea mode first, edit the prompt, then expand again."]];
       Return[$Failed]];
 
-    (* ノートブックコンテキスト収集: 周辺セル + アタッチメント情報 *)
+    (* ノートブックコンテキスト収集: 周辺セル + アタッチメント情報 + 辞書 + 指示 *)
     context = iDocCollectContext[nb, cellIdx];
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> context;
 
     (* プロンプト構築関数の選択 *)
     prevParagraph = If[mode === "idea",
@@ -399,7 +668,7 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     ];
 
     (* 非同期 LLM 変換: カーネルをブロックしない。 *)
-    With[{nb2 = nb},
+    With[{nb2 = nb, cellAtts = iDocGetCurrentAttachments[nb]},
       NBAccess`NBCellTransformWithLLM[nb, cellIdx,
         promptFn,
         (* completionFn: LLM 応答後に実行されるコールバック *)
@@ -410,7 +679,19 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                 result["OriginalText"]];
               NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "paragraph"];
               NBAccess`NBCellSetOptions[nb2, ci,
-                Sequence @@ $iDocParagraphCellOpts]],
+                Sequence @@ $iDocParagraphCellOpts];
+              (* 編集追跡: 展開結果をクリーンテキストとして記録 *)
+              NBAccess`NBCellSetTaggingRule[nb2, ci,
+                $iDocTagCleanText, result["Response"]];
+              (* 依存資料: 展開時のアタッチメントを記録（既存設定がなければ） *)
+              If[Length[iDocGetRefSources[nb2, ci]] === 0 &&
+                 Length[cellAtts] > 0,
+                Module[{pdfAtts},
+                  pdfAtts = Select[cellAtts,
+                    StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
+                  If[Length[pdfAtts] > 0,
+                    iDocSetRefSources[nb2, ci,
+                      {#, All} & /@ pdfAtts]]]]],
             (* エラー *)
             MessageDialog[iL[
               "エラー: LLM 応答を取得できませんでした。",
@@ -425,12 +706,26 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
 
 DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
   Module[{currentText, mode, alternate, newMode, showTrans, transSrc,
-          storedTranslation},
-    (* Note セルは対象外 *)
-    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
+          storedTranslation, cleanText, wasEdited, prevMode, prevShowTrans},
+    (* Note/Dictionary/Directive セルは対象外 *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
+
+    (* 編集検出: cleanText と現在テキストを比較。
+       cleanMode が現在のモードと一致する場合のみ編集ありと判定する。
+       モードが変わっていれば cleanText は前のモードの残留値なので無視する。 *)
+    cleanText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagCleanText];
+    currentText = NBAccess`NBCellGetText[nb, cellIdx];
+    Module[{cleanMode, currentMode},
+      cleanMode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagCleanMode];
+      currentMode = ToString[mode] <> ":" <> ToString[TrueQ[showTrans]];
+      wasEdited = StringQ[cleanText] && StringQ[currentText] &&
+        StringQ[cleanMode] && cleanMode === currentMode &&
+        currentText =!= cleanText];
+    prevMode = If[StringQ[mode], mode, ""];
+    prevShowTrans = TrueQ[showTrans];
 
     (* ========================================================
        翻訳付きセル (mode="translated"): 元テキスト ↔ 翻訳
@@ -440,13 +735,16 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         (* 翻訳表示中 → 元テキストに戻す（水色枠） *)
         transSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
         If[StringQ[transSrc],
-          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
-            $iDocTagTranslation, NBAccess`NBCellGetText[nb, cellIdx]];
+          (* 編集済みなら翻訳を保存 *)
+          If[wasEdited,
+            NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+              $iDocTagTranslation, currentText],
+            NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+              $iDocTagTranslation, NBAccess`NBCellGetText[nb, cellIdx]]];
           NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, False];
           NBAccess`NBCellSetOptions[nb, cellIdx,
             Sequence @@ $iDocTranslatedCellOpts];
-          NBAccess`NBInvalidateCellsCache[nb];
-          NBAccess`NBCellWriteText[nb, cellIdx, transSrc];],
+          iDocWriteAndTrack[nb, cellIdx, transSrc];],
         (* 元テキスト表示中 → 翻訳を表示（青枠） *)
         storedTranslation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
         If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
@@ -455,8 +753,11 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
           NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, True];
           NBAccess`NBCellSetOptions[nb, cellIdx,
             Sequence @@ $iDocTranslationCellOpts];
-          NBAccess`NBInvalidateCellsCache[nb];
-          NBAccess`NBCellWriteText[nb, cellIdx, storedTranslation];]];
+          iDocWriteAndTrack[nb, cellIdx, storedTranslation];]];
+      (* 編集済みならバックグラウンド同期 *)
+      If[wasEdited,
+        iDocPostToggleSync[nb, cellIdx, "translated", prevShowTrans,
+          ClaudeCode`GetPaletteFallback[]]];
       Return[]];
 
     (* ========================================================
@@ -465,8 +766,12 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
     If[TrueQ[showTrans],
       transSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
       If[StringQ[transSrc],
-        NBAccess`NBCellSetTaggingRule[nb, cellIdx,
-          $iDocTagTranslation, NBAccess`NBCellGetText[nb, cellIdx]];
+        (* 編集済みなら翻訳を保存 *)
+        If[wasEdited,
+          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+            $iDocTagTranslation, currentText],
+          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+            $iDocTagTranslation, NBAccess`NBCellGetText[nb, cellIdx]]];
         NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, False]];
       alternate = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
       If[mode === "paragraph" && StringQ[alternate],
@@ -476,15 +781,20 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagMode, "idea"];
         NBAccess`NBCellSetOptions[nb, cellIdx,
           Sequence @@ $iDocIdeaCellOpts];
-        NBAccess`NBInvalidateCellsCache[nb];
-        NBAccess`NBCellWriteText[nb, cellIdx, alternate];
+        iDocWriteAndTrack[nb, cellIdx, alternate];
+        (* 編集済みならバックグラウンド同期 *)
+        If[wasEdited,
+          iDocPostToggleSync[nb, cellIdx, prevMode, True,
+            ClaudeCode`GetPaletteFallback[]]];
         Return[alternate]];
       (* fallback: 翻訳元を復元 *)
       If[StringQ[transSrc],
         NBAccess`NBCellSetOptions[nb, cellIdx,
           CellFrame -> Inherited, CellFrameColor -> Inherited];
-        NBAccess`NBInvalidateCellsCache[nb];
-        NBAccess`NBCellWriteText[nb, cellIdx, transSrc];];
+        iDocWriteAndTrack[nb, cellIdx, transSrc];];
+      If[wasEdited,
+        iDocPostToggleSync[nb, cellIdx, prevMode, True,
+          ClaudeCode`GetPaletteFallback[]]];
       Return[]];
 
     (* ========================================================
@@ -508,8 +818,10 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, True];
         NBAccess`NBCellSetOptions[nb, cellIdx,
           Sequence @@ $iDocTranslationCellOpts];
-        NBAccess`NBInvalidateCellsCache[nb];
-        NBAccess`NBCellWriteText[nb, cellIdx, storedTranslation];
+        iDocWriteAndTrack[nb, cellIdx, storedTranslation];
+        If[wasEdited,
+          iDocPostToggleSync[nb, cellIdx, "paragraph", False,
+            ClaudeCode`GetPaletteFallback[]]];
         Return[storedTranslation]]];
 
     (* idea ↔ paragraph の2段階トグル *)
@@ -520,8 +832,12 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
     NBAccess`NBCellSetOptions[nb, cellIdx,
       Sequence @@ If[newMode === "paragraph",
         $iDocParagraphCellOpts, $iDocIdeaCellOpts]];
-    NBAccess`NBInvalidateCellsCache[nb];
-    NBAccess`NBCellWriteText[nb, cellIdx, alternate];
+    iDocWriteAndTrack[nb, cellIdx, alternate];
+
+    (* 編集済みならバックグラウンド同期 *)
+    If[wasEdited,
+      iDocPostToggleSync[nb, cellIdx, prevMode, False,
+        ClaudeCode`GetPaletteFallback[]]];
 
     alternate
   ];
@@ -540,46 +856,66 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
 
 (* 初回翻訳プロンプト: 普通のセル用（言語自動検出）
    テキストが primaryLang なら alternateLang に、それ以外なら primaryLang に翻訳する *)
-iDocTranslateAutoPromptFn[text_String, primaryLang_String, alternateLang_String] :=
+iDocTranslateAutoPromptFn[text_String, primaryLang_String, alternateLang_String, context_String:""] :=
+  context <>
   "Detect the language of the following text, then translate it.\n" <>
   "- If the text is in " <> primaryLang <> ", translate it into " <> alternateLang <> ".\n" <>
   "- If the text is in any other language, translate it into " <> primaryLang <> ".\n" <>
   "Rules:\n" <>
   "- Produce a natural, fluent translation\n" <>
   "- Preserve the original structure and meaning faithfully\n" <>
-  "- Output ONLY the translated text, nothing else\n" <>
+  "- CRITICAL: Output ONLY the translated text. " <>
+  "Do NOT include any preamble, thinking, or meta-commentary " <>
+  "such as 'Let me...', 'Here is...', 'The text is in...'. " <>
+  "The very first character must be the start of the translation itself\n" <>
   "- Do not use markdown formatting\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, ALWAYS use the specified term mappings for translation\n" <>
+  "- Consider the surrounding context to produce a translation that fits the overall document flow\n" <>
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   "Text to translate:\n" <> text;
 
 (* パラグラフ用翻訳プロンプト: 固定ターゲット言語 *)
-iDocTranslatePromptFn[text_String, targetLang_String] :=
+iDocTranslatePromptFn[text_String, targetLang_String, context_String:""] :=
+  context <>
   "Translate the following text into " <> targetLang <> ".\n" <>
   "Rules:\n" <>
   "- Produce a natural, fluent translation\n" <>
   "- Preserve the original structure and meaning faithfully\n" <>
-  "- Output ONLY the translated text, nothing else\n" <>
+  "- CRITICAL: Output ONLY the translated text. " <>
+  "Do NOT include any preamble, thinking, or meta-commentary. " <>
+  "The very first character must be the start of the translation itself\n" <>
   "- Do not use markdown formatting\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, ALWAYS use the specified term mappings for translation\n" <>
+  "- Consider the surrounding context to produce a translation that fits the overall document flow\n" <>
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   "Text to translate:\n" <> text;
 
 (* 初回翻訳プロンプト（プロンプト参照付き） *)
-iDocTranslateWithContextPromptFn[text_String, targetLang_String, ideaText_String] :=
+iDocTranslateWithContextPromptFn[text_String, targetLang_String, ideaText_String, context_String:""] :=
+  context <>
   "Translate the following paragraph into " <> targetLang <> ".\n" <>
   "The paragraph was written based on the 'Original prompt' below. " <>
   "Use it as context to improve translation accuracy.\n" <>
   "Rules:\n" <>
   "- Produce a natural, fluent translation\n" <>
   "- Preserve the original structure and meaning faithfully\n" <>
-  "- Output ONLY the translated text, nothing else\n" <>
+  "- CRITICAL: Output ONLY the translated text. " <>
+  "Do NOT include any preamble, thinking, or meta-commentary. " <>
+  "The very first character must be the start of the translation itself\n" <>
   "- Do not use markdown formatting\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, ALWAYS use the specified term mappings for translation\n" <>
+  "- Consider the surrounding context to produce a translation that fits the overall document flow\n" <>
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   "Original prompt:\n" <> ideaText <>
   "\n\nParagraph to translate:\n" <> text;
 
 (* 再翻訳プロンプト: 既存翻訳のユーザー修正を踏襲しつつ更新 *)
 iDocReTranslatePromptFn[text_String, targetLang_String,
-    prevTranslation_String, ideaText_String] :=
+    prevTranslation_String, ideaText_String, context_String:""] :=
+  context <>
   "The paragraph below has been updated. Revise the 'Previous translation' accordingly.\n" <>
   If[ideaText =!= "",
     "The 'Original prompt' provides context for what the paragraph is about.\n", ""] <>
@@ -588,7 +924,12 @@ iDocReTranslatePromptFn[text_String, targetLang_String,
   "- Update only the parts that correspond to changes in the paragraph\n" <>
   "- Produce a natural, fluent " <> targetLang <> " translation\n" <>
   "- Output ONLY the revised translation, nothing else\n" <>
+  "- CRITICAL: Do NOT include any preamble, thinking, or meta-commentary. " <>
+  "The very first character must be the start of the revised translation itself\n" <>
   "- Do not use markdown formatting\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, ALWAYS use the specified term mappings for translation\n" <>
+  "- Consider the surrounding context to produce a translation that fits the overall document flow\n" <>
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   If[ideaText =!= "",
     "Original prompt:\n" <> ideaText <> "\n\n", ""] <>
@@ -597,10 +938,11 @@ iDocReTranslatePromptFn[text_String, targetLang_String,
 
 DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{currentText, storedTranslation, storedSrc, showTrans,
-          mode, targetLang, useFallback, ideaText, promptFn},
+          mode, targetLang, useFallback, ideaText, promptFn,
+          dictionary, directives, metaContext},
     useFallback = TrueQ[OptionValue[Fallback]];
-    (* Note セルは対象外 *)
-    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
+    (* Note/Dictionary/Directive セルは対象外 *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
 
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
@@ -651,22 +993,28 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         Sequence @@ $iDocTranslationCellOpts];
       NBAccess`NBInvalidateCellsCache[nb];
       NBAccess`NBCellWriteText[nb, cellIdx, storedTranslation];
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagCleanText, storedTranslation];
       Return[]];
+
+    (* Dictionary/Directives/Context 収集 *)
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    metaContext = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
 
     (* プロンプト構築: 既存翻訳の有無で分岐 *)
     promptFn = Which[
       (* 再翻訳: ソースが変わった + 既存翻訳あり → ユーザー修正を踏襲 *)
       StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
-        With[{prev = storedTranslation, idea = ideaText, tl = targetLang},
-          Function[t, iDocReTranslatePromptFn[t, tl, prev, idea]]],
+        With[{prev = storedTranslation, idea = ideaText, tl = targetLang, ctx = metaContext},
+          Function[t, iDocReTranslatePromptFn[t, tl, prev, idea, ctx]]],
       (* 初回翻訳: プロンプト参照付き（パラグラフモードの場合） *)
       ideaText =!= "",
-        With[{idea = ideaText, tl = targetLang},
-          Function[t, iDocTranslateWithContextPromptFn[t, tl, idea]]],
+        With[{idea = ideaText, tl = targetLang, ctx = metaContext},
+          Function[t, iDocTranslateWithContextPromptFn[t, tl, idea, ctx]]],
       (* 初回翻訳: 普通のセル → 言語自動検出 *)
       True,
-        With[{pl = iDocOutputLanguage[], al = iDocTranslationTarget[]},
-          Function[t, iDocTranslateAutoPromptFn[t, pl, al]]]
+        With[{pl = iDocOutputLanguage[], al = iDocTranslationTarget[], ctx = metaContext},
+          Function[t, iDocTranslateAutoPromptFn[t, pl, al, ctx]]]
     ];
 
     (* 非同期翻訳 *)
@@ -687,7 +1035,10 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
               NBAccess`NBCellSetTaggingRule[nb2, ci,
                 $iDocTagShowTranslation, True];
               NBAccess`NBCellSetOptions[nb2, ci,
-                Sequence @@ $iDocTranslationCellOpts]]]],
+                Sequence @@ $iDocTranslationCellOpts];
+              (* 編集追跡: 翻訳結果をクリーンテキストとして記録 *)
+              NBAccess`NBCellSetTaggingRule[nb2, ci,
+                $iDocTagCleanText, result["Response"]]]]],
         Fallback -> useFallback]
     ];
   ];
@@ -709,7 +1060,8 @@ Options[DocTranslate] = {Fallback -> False};
 
 (* 翻訳→パラグラフ逆同期プロンプト *)
 iDocReverseSyncPromptFn[editedTranslation_String, prevParagraph_String,
-    ideaText_String, outputLang_String] :=
+    ideaText_String, outputLang_String, context_String:""] :=
+  context <>
   "TASK: The user has edited a translation. Your job is to update the " <>
   "'Original paragraph' so that its MEANING matches the edited translation.\n\n" <>
   "CRITICAL LANGUAGE RULE:\n" <>
@@ -725,7 +1077,11 @@ iDocReverseSyncPromptFn[editedTranslation_String, prevParagraph_String,
   "- Update the corresponding parts of the original paragraph IN " <> outputLang <> "\n" <>
   "- Preserve the structure and style of the original paragraph\n" <>
   "- Output ONLY the updated paragraph in " <> outputLang <> ", nothing else\n" <>
+  "- CRITICAL: Do NOT include any preamble, thinking, or meta-commentary. " <>
+  "The very first character must be the start of the updated paragraph itself\n" <>
   "- Do not use markdown formatting\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, use the specified term mappings\n" <>
   "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
   If[ideaText =!= "",
     "Original prompt:\n" <> ideaText <> "\n\n", ""] <>
@@ -748,10 +1104,11 @@ Options[DocSync] = {Fallback -> False};
 
 DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{mode, showTrans, currentText, useFallback, ideaText, paragraph,
-          translation, targetLang, prompt, context, syncTag},
+          translation, targetLang, prompt, context, syncTag,
+          dictionary, directives},
     useFallback = TrueQ[OptionValue[Fallback]];
-    (* Note セルは対象外 *)
-    If[iDocIsNoteCell[nb, cellIdx], Return[$Failed]];
+    (* Note/Dictionary/Directive セルは対象外 *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
@@ -760,7 +1117,9 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
       Return[$Failed]];
 
     targetLang = iDocTranslationTarget[];
-    context = iDocCollectContext[nb, cellIdx];
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
 
     (* セルにタグを付与: Job の進捗セル挿入でインデックスがずれても再発見可能にする *)
     syncTag = "doc-sync-" <> ToString[UnixTime[]] <> "-" <> ToString[RandomInteger[99999]];
@@ -780,7 +1139,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         With[{nb2 = nb, origIdx = cellIdx, tl = targetLang, fb = useFallback,
               hasTranslation = StringQ[translation] && StringTrim[translation] =!= "",
               oldTranslation = If[StringQ[translation], translation, ""],
-              idea = ideaText, stag = syncTag},
+              idea = ideaText, stag = syncTag, ctx = context},
           NBAccess`$NBLLMQueryFunc[prompt,
             Function[response,
               Module[{idx},
@@ -796,7 +1155,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                     Quiet[CurrentValue[nb2, WindowStatusArea] =
                       iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
                     Module[{tPrompt = iDocReTranslatePromptFn[
-                        newPara, tl, oldTranslation, idea]},
+                        newPara, tl, oldTranslation, idea, ctx]},
                       NBAccess`$NBLLMQueryFunc[tPrompt,
                         Function[tResponse,
                           Module[{idx2},
@@ -845,7 +1204,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
             "翻訳がありません。先に翻訳ボタンで翻訳を生成してください。",
             "No translation exists. Use the Translate button first."]];
           Return[$Failed]];
-        prompt = iDocReTranslatePromptFn[paragraph, targetLang, translation, ideaText];
+        prompt = iDocReTranslatePromptFn[paragraph, targetLang, translation, ideaText, context];
         Quiet[CurrentValue[nb, WindowStatusArea] =
           iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
         With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph, stag = syncTag},
@@ -881,7 +1240,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
         If[!StringQ[ideaText], ideaText = ""];
         prompt = iDocReverseSyncPromptFn[translation, paragraph,
-          ideaText, iDocOutputLanguage[]];
+          ideaText, iDocOutputLanguage[], context];
         Quiet[CurrentValue[nb, WindowStatusArea] =
           iL["同期中: パラグラフ更新...", "Syncing: updating paragraph..."]];
         With[{nb2 = nb, origIdx = cellIdx, m = mode, stag = syncTag},
@@ -922,116 +1281,180 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
 
 iDocShowAllAs[targetView_String] :=
   Module[{nb = iDocUserNotebook[], nCells, mode, showTrans, alternate,
-          storedTranslation, transSrc, currentText, count = 0},
+          storedTranslation, transSrc, currentText, count = 0,
+          (* 2パス: まず変更計画を収集し、次に一括適用する。
+             1パスでは NBCellWriteText と NBCellGetText の交互実行で
+             キャッシュ不整合が発生しセルが破損する。 *)
+          plan = {}},
     If[Head[nb] =!= NotebookObject, Return[]];
     NBAccess`NBInvalidateCellsCache[nb];
     nCells = NBAccess`NBCellCount[nb];
+
+    (* === Pass 1: 変更計画の収集 === *)
     Do[
+      NBAccess`NBInvalidateCellsCache[nb];
       mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
       showTrans = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagShowTranslation];
-      (* 対象: documentation モードを持つセルのみ *)
       If[StringQ[mode],
         Which[
-          (* === 全プロンプト表示 === *)
+          (* === 全プロンプト === *)
           targetView === "idea" && mode === "paragraph" && !TrueQ[showTrans],
-            (* paragraph → idea *)
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
-            If[StringQ[alternate],
-              currentText = NBAccess`NBCellGetText[nb, i];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagAlternate,
-                If[StringQ[currentText], currentText, ""]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagMode, "idea"];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocIdeaCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, alternate];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++],
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[alternate] && StringTrim[alternate] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "para->idea",
+                "writeText" -> alternate,
+                "storeAlt" -> If[StringQ[currentText], currentText, ""]|>]],
+
           targetView === "idea" && TrueQ[showTrans] && mode === "paragraph",
-            (* translation → idea (via paragraph revert + toggle) *)
             transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
-            If[StringQ[transSrc] && StringQ[alternate],
-              NBAccess`NBCellSetTaggingRule[nb, i,
-                $iDocTagTranslation, NBAccess`NBCellGetText[nb, i]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagShowTranslation, False];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagAlternate, transSrc];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagMode, "idea"];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocIdeaCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, alternate];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++],
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[transSrc] && StringQ[alternate] &&
+               StringTrim[alternate] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "trans->idea",
+                "writeText" -> alternate, "storeAlt" -> transSrc,
+                "saveTrans" -> currentText|>]],
 
-          (* === 全パラグラフ表示 === *)
+          (* === 全パラグラフ === *)
           targetView === "paragraph" && mode === "idea",
-            (* idea → paragraph *)
             alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
-            If[StringQ[alternate],
-              currentText = NBAccess`NBCellGetText[nb, i];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagAlternate,
-                If[StringQ[currentText], currentText, ""]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagMode, "paragraph"];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocParagraphCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, alternate];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++],
-          targetView === "paragraph" && TrueQ[showTrans] && mode === "paragraph",
-            (* translation → paragraph *)
-            transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
-            If[StringQ[transSrc],
-              NBAccess`NBCellSetTaggingRule[nb, i,
-                $iDocTagTranslation, NBAccess`NBCellGetText[nb, i]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagShowTranslation, False];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocParagraphCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, transSrc];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++],
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[alternate] && StringTrim[alternate] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "idea->para",
+                "writeText" -> alternate,
+                "storeAlt" -> If[StringQ[currentText], currentText, ""]|>]],
 
-          (* === 全翻訳表示 === *)
-          targetView === "translation" && !TrueQ[showTrans],
+          targetView === "paragraph" && TrueQ[showTrans] && mode === "paragraph",
+            transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[transSrc] && StringTrim[transSrc] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "trans->para",
+                "writeText" -> transSrc, "saveTrans" -> currentText|>]],
+
+          (* === 全翻訳 === *)
+          targetView === "translation" && !TrueQ[showTrans] && mode === "idea",
+            (* idea → translation: まず paragraph に戻してから翻訳表示 *)
             storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
+            alternate = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagAlternate];
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "" &&
+               StringQ[alternate] && StringTrim[alternate] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "idea->trans",
+                "writeText" -> storedTranslation,
+                "storeAlt" -> If[StringQ[currentText], currentText, ""],
+                "paragraph" -> alternate|>]],
+
+          targetView === "translation" && !TrueQ[showTrans] && mode =!= "idea",
+            storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
+            currentText = NBAccess`NBCellGetText[nb, i];
             If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
-              (* 現在のテキストを translationSrc に保存 *)
-              currentText = NBAccess`NBCellGetText[nb, i];
-              NBAccess`NBCellSetTaggingRule[nb, i,
-                $iDocTagTranslationSrc, If[StringQ[currentText], currentText, ""]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagShowTranslation, True];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocTranslationCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, storedTranslation];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++]
+              AppendTo[plan, <|"idx" -> i, "action" -> "show-trans",
+                "writeText" -> storedTranslation,
+                "saveTransSrc" -> If[StringQ[currentText], currentText, ""]|>]]
         ]];
-      (* translated モード（普通セル+翻訳）のトグルも処理 *)
+      (* translated モード *)
       If[mode === "translated",
         Which[
           targetView === "translation" && !TrueQ[showTrans],
             storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
+            currentText = NBAccess`NBCellGetText[nb, i];
             If[StringQ[storedTranslation] && StringTrim[storedTranslation] =!= "",
-              currentText = NBAccess`NBCellGetText[nb, i];
-              NBAccess`NBCellSetTaggingRule[nb, i,
-                $iDocTagTranslationSrc, If[StringQ[currentText], currentText, ""]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagShowTranslation, True];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocTranslationCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, storedTranslation];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++],
+              AppendTo[plan, <|"idx" -> i, "action" -> "translated-show",
+                "writeText" -> storedTranslation,
+                "saveTransSrc" -> If[StringQ[currentText], currentText, ""]|>]],
           (targetView === "idea" || targetView === "paragraph") && TrueQ[showTrans],
             transSrc = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslationSrc];
-            If[StringQ[transSrc],
-              NBAccess`NBCellSetTaggingRule[nb, i,
-                $iDocTagTranslation, NBAccess`NBCellGetText[nb, i]];
-              NBAccess`NBCellSetTaggingRule[nb, i, $iDocTagShowTranslation, False];
-              NBAccess`NBCellSetOptions[nb, i, Sequence @@ $iDocTranslatedCellOpts];
-              NBAccess`NBInvalidateCellsCache[nb];
-              NBAccess`NBCellWriteText[nb, i, transSrc];
-              NBAccess`NBInvalidateCellsCache[nb];
-              count++]
+            currentText = NBAccess`NBCellGetText[nb, i];
+            If[StringQ[transSrc] && StringTrim[transSrc] =!= "",
+              AppendTo[plan, <|"idx" -> i, "action" -> "translated-revert",
+                "writeText" -> transSrc, "saveTrans" -> currentText|>]]
         ]],
     {i, nCells}];
+
+    (* === Pass 2: 一括適用 === *)
+    Do[
+      Module[{idx = p["idx"], act = p["action"]},
+        NBAccess`NBInvalidateCellsCache[nb];
+        Which[
+          act === "para->idea",
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagAlternate, p["storeAlt"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, "idea"];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocIdeaCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "trans->idea",
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslation, p["saveTrans"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, False];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagAlternate, p["storeAlt"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, "idea"];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocIdeaCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "idea->para",
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagAlternate, p["storeAlt"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, "paragraph"];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocParagraphCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "trans->para",
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslation, p["saveTrans"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, False];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocParagraphCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "show-trans",
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslationSrc, p["saveTransSrc"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, True];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocTranslationCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "idea->trans",
+            (* idea → paragraph → translation を一括で実行 *)
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagAlternate, p["storeAlt"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, "paragraph"];
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslationSrc, p["paragraph"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, True];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocTranslationCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "translated-show",
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslationSrc, p["saveTransSrc"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, True];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocTranslationCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "translated-revert",
+            NBAccess`NBCellSetTaggingRule[nb, idx,
+              $iDocTagTranslation, p["saveTrans"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, False];
+            NBAccess`NBCellSetOptions[nb, idx, Sequence @@ $iDocTranslatedCellOpts];
+            NBAccess`NBInvalidateCellsCache[nb];
+            NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]]
+        ];
+        count++],
+    {p, plan}];
+
     If[count > 0,
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL[ToString[count] <> " セルを切り替えました。",
@@ -1041,23 +1464,120 @@ iDocShowAllAs[targetView_String] :=
   ];
 
 (* ============================================================
+   全翻訳: 未翻訳セルを翻訳してから全セルを翻訳表示に切り替える
+   ============================================================ *)
+
+iDocTranslateAllAndShow[] :=
+  Module[{nb = iDocUserNotebook[], nCells, needTranslation = {},
+          mode, showTrans, storedTranslation, text, fb},
+    If[Head[nb] =!= NotebookObject, Return[]];
+    fb = ClaudeCode`GetPaletteFallback[];
+    NBAccess`NBInvalidateCellsCache[nb];
+    nCells = NBAccess`NBCellCount[nb];
+
+    (* 翻訳が必要なセルを収集:
+       - paragraph モードで翻訳なし
+       - translated モードで翻訳なし
+       - idea モードはスキップ（パラグラフに展開してから翻訳）
+       - メタセルはスキップ *)
+    Do[
+      If[!iDocIsMetaCell[nb, i] &&
+         !TrueQ[NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagExcludeExport]],
+        mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
+        showTrans = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagShowTranslation];
+        storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
+        text = NBAccess`NBCellGetText[nb, i];
+        (* 画像セルはスキップ *)
+        If[NBAccess`NBCellHasImage[NBAccess`NBCellRead[nb, i]], Continue[]];
+        (* 翻訳が必要: documentation モードを持つセル + 翻訳なし + テキストあり *)
+        If[StringQ[mode] && mode =!= "idea" &&
+           (!StringQ[storedTranslation] || StringTrim[storedTranslation] === "") &&
+           !TrueQ[showTrans] &&
+           StringQ[text] && StringLength[text] > 10,
+          AppendTo[needTranslation, i]]],
+    {i, nCells}];
+
+    If[Length[needTranslation] === 0,
+      (* 全セル翻訳済み → 即座に翻訳表示に切り替え *)
+      iDocShowAllAs["translation"];
+      Return[]];
+
+    (* 未翻訳セルを非同期チェーンで翻訳し、完了後に全翻訳表示 *)
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["全翻訳中: 0/" <> ToString[Length[needTranslation]],
+         "Translating all: 0/" <> ToString[Length[needTranslation]]]];
+    iDocTranslateAllChain[nb, needTranslation, 1, fb,
+      Length[needTranslation]]
+  ];
+
+(* 非同期チェーン: 1セルずつ翻訳し、完了後に全翻訳表示 *)
+iDocTranslateAllChain[nb_, idxs_, pos_, fb_, total_] :=
+  If[pos > Length[idxs],
+    (* 全翻訳完了 → 全セルを翻訳表示に切り替え *)
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[ToString[total] <> " セルの翻訳完了。表示を切替中...",
+         ToString[total] <> " cells translated. Switching view..."]];
+    RunScheduledTask[
+      (NBAccess`NBInvalidateCellsCache[nb];
+       iDocShowAllAs["translation"];
+       Quiet[CurrentValue[nb, WindowStatusArea] =
+         iL["全翻訳表示完了", "All translations displayed"]];
+       RunScheduledTask[With[{pNb = nb},
+         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]),
+      {1}],
+    Module[{cellIdx = idxs[[pos]], mode},
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["全翻訳中: ", "Translating all: "] <>
+          ToString[pos] <> "/" <> ToString[total]];
+      mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+      If[mode === "idea" || iDocIsMetaCell[nb, cellIdx],
+        (* スキップ *)
+        iDocTranslateAllChain[nb, idxs, pos + 1, fb, total],
+        (* 翻訳実行 *)
+        DocTranslate[nb, cellIdx, Fallback -> fb];
+        (* DocTranslate は非同期なので、遅延で次へ進む *)
+        RunScheduledTask[
+          With[{pNb = nb, is = idxs, p = pos, f = fb, t = total},
+            iDocTranslateAllChain[pNb, is, p + 1, f, t]], {2}]]]
+  ];
+
+(* ============================================================
    パレットボタンアクション
    ============================================================ *)
 
 SetAttributes[iDocButton, HoldRest];
 iDocButton[label_String, color_, action_] :=
   Button[
-    Style[label, Bold, 10, White],
+    Style[label, Bold, 9, White],
     CompoundExpression[action,
       With[{inb = InputNotebook[]},
         If[Head[inb] === NotebookObject,
           SetSelectedNotebook[inb]]]],
     Appearance -> "Frameless",
     Background -> color,
-    ImageSize -> {100, 22},
-    FrameMargins -> {{4, 4}, {2, 2}},
+    ImageSize -> {100, 18},
+    FrameMargins -> {{4, 4}, {1, 1}},
     Method -> "Queued"
   ];
+
+(* 2列配置用: 幅48のボタンを横に2つ並べる *)
+SetAttributes[iDocButton2, HoldRest];
+iDocButton2[label_String, color_, action_] :=
+  Button[
+    Style[label, Bold, 7, White],
+    CompoundExpression[action,
+      With[{inb = InputNotebook[]},
+        If[Head[inb] === NotebookObject,
+          SetSelectedNotebook[inb]]]],
+    Appearance -> "Frameless",
+    Background -> color,
+    ImageSize -> {49, 18},
+    FrameMargins -> {{1, 1}, {1, 1}},
+    Method -> "Queued"
+  ];
+
+iDocButtonRow[b1_, b2_] :=
+  Grid[{{b1, b2}}, Spacings -> 0.1, ItemSize -> {Automatic, Automatic}];
 
 iDocExpandSelected[] :=
   Module[{nb, cellIdxs},
@@ -1083,7 +1603,7 @@ iDocExpandSelectedChain[nb_, idxs_, pos_, fb_] :=
       iL["展開中: ", "Expanding: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[mode === "paragraph" || iDocIsNoteCell[nb, cellIdx],
+      If[mode === "paragraph" || iDocIsMetaCell[nb, cellIdx],
         (* パラグラフモード / Note セルはスキップ *)
         iDocExpandSelectedChain[nb, idxs, pos + 1, fb],
         (* 展開: completionFn 内で次へ進む。
@@ -1131,7 +1651,7 @@ iDocTranslateSelectedChain[nb_, idxs_, pos_, fb_] :=
       iL["翻訳中: ", "Translating: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[mode === "idea" || iDocIsNoteCell[nb, cellIdx],
+      If[mode === "idea" || iDocIsMetaCell[nb, cellIdx],
         (* プロンプトモード / Note セルはスキップ *)
         iDocTranslateSelectedChain[nb, idxs, pos + 1, fb],
         DocTranslate[nb, cellIdx, Fallback -> fb];
@@ -1227,6 +1747,466 @@ iDocDeleteTranslateSelected[] :=
   ];
 
 (* ============================================================
+   Export 除外トグル
+   セルの export 除外フラグをトグルする。
+   除外セルは右側に赤い点線枠を付けて視覚的に示す。
+   ============================================================ *)
+
+iDocToggleExportExclude[] :=
+  Module[{nb, cellIdxs, idx, isExcluded, count = 0},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    Do[
+      NBAccess`NBInvalidateCellsCache[nb];
+      isExcluded = TrueQ[
+        NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagExcludeExport]];
+      If[isExcluded,
+        (* 除外解除: タグをクリアし、マーカーを消す *)
+        NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagExcludeExport, None];
+        NBAccess`NBCellSetOptions[nb, idx,
+          CellFrameLabels -> Inherited],
+        (* 除外設定: タグを付けて右側に赤マーカーを表示 *)
+        NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagExcludeExport, True];
+        NBAccess`NBCellSetOptions[nb, idx,
+          CellFrameLabels -> {{None,
+            Cell["\[Times]", FontColor -> RGBColor[0.7, 0.3, 0.3], FontSize -> 9]},
+            {None, None}}]];
+      count++,
+    {idx, cellIdxs}];
+    If[count > 0,
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL[ToString[count] <> " セルの除外設定を切替。",
+           ToString[count] <> " cell(s) export toggle."]];
+      RunScheduledTask[With[{pNb = nb},
+        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]];
+  ];
+
+(* ============================================================
+   セル分割・合併
+   ============================================================ *)
+
+(* 選択内容/Box表現をプレーンテキストに変換 *)
+iDocExprToText[s_String] := s;
+iDocExprToText[TextData[elems_List]] := StringJoin[iDocExprToText /@ elems];
+iDocExprToText[TextData[s_]] := iDocExprToText[s];
+iDocExprToText[Cell[content_, ___]] := iDocExprToText[content];
+iDocExprToText[StyleBox[s_, ___]] := iDocExprToText[s];
+iDocExprToText[ButtonBox[s_, ___]] := iDocExprToText[s];
+iDocExprToText[BoxData[s_]] := iDocExprToText[s];
+iDocExprToText[RowBox[elems_List]] := StringJoin[iDocExprToText /@ elems];
+iDocExprToText[{}] := "";
+iDocExprToText[list_List] := StringJoin[iDocExprToText /@ list];
+iDocExprToText[_] := "";
+
+(* テキストを比率で分割（文の区切りを優先的に探す） *)
+iDocProportionalSplit[text_String, ratio_?NumberQ] :=
+  Module[{len, pos, candidates, range, filtered, bestPos},
+    len = StringLength[text];
+    If[len === 0, Return[{"", ""}]];
+    pos = Max[1, Min[len, Round[len * ratio]]];
+    candidates = StringPosition[text,
+      RegularExpression["[\:3002\:ff0e.!?\:ff01\:ff1f\\n]"]];
+    If[Length[candidates] > 0,
+      range = Max[10, Round[len * 0.1]];
+      filtered = Select[candidates, Abs[#[[1]] - pos] <= range &];
+      If[Length[filtered] > 0,
+        bestPos = First[SortBy[filtered, Abs[#[[1]] - pos] &]][[1]];
+        Return[{StringTake[text, bestPos], StringTrim[StringDrop[text, bestPos]]}]]];
+    {StringTake[text, pos], StringTrim[StringDrop[text, pos]]}
+  ];
+
+(* カーソルがあるセルのインデックスを解決する *)
+iDocResolveCursorCell[] :=
+  Module[{nb, selCells, allCells, pos},
+    nb = iDocUserNotebook[];
+    If[Head[nb] =!= NotebookObject, Return[{$Failed, 0}]];
+    NBAccess`NBInvalidateCellsCache[nb];
+    selCells = Quiet[SelectedCells[nb]];
+    If[!ListQ[selCells] || Length[selCells] === 0,
+      Return[iDocResolveTargetCell[]]];
+    allCells = Cells[nb];
+    pos = Flatten[Position[allCells, First[selCells]]];
+    If[Length[pos] > 0, {nb, First[pos]}, iDocResolveTargetCell[]]
+  ];
+
+(* プロンプト分割用LLMプロンプト *)
+iDocSplitPromptFn[originalPrompt_String, frontPara_String, backPara_String] :=
+  "A paragraph was generated from the 'Original prompt' below, " <>
+  "then split into two halves.\n" <>
+  "Generate two brief idea/prompt phrases — one for each half.\n" <>
+  "Rules:\n" <>
+  "- Respect the style and intent of the original prompt\n" <>
+  "- Each prompt should capture what its half discusses\n" <>
+  "- CRITICAL: Output ONLY in this exact format, nothing else:\n" <>
+  "[FRONT]\n<prompt for front half>\n[BACK]\n<prompt for back half>\n\n" <>
+  "Original prompt:\n" <> originalPrompt <>
+  "\n\nFront half:\n" <> frontPara <>
+  "\n\nBack half:\n" <> backPara;
+
+(* セルの視覚スタイルをモードに応じて設定する *)
+iDocApplyModeStyle[nb_, cellIdx_, mode_, showTrans_] :=
+  Which[
+    TrueQ[showTrans],
+      NBAccess`NBCellSetOptions[nb, cellIdx,
+        Sequence @@ $iDocTranslationCellOpts],
+    mode === "paragraph",
+      NBAccess`NBCellSetOptions[nb, cellIdx,
+        Sequence @@ $iDocParagraphCellOpts],
+    mode === "idea",
+      NBAccess`NBCellSetOptions[nb, cellIdx,
+        Sequence @@ $iDocIdeaCellOpts],
+    mode === "translated",
+      NBAccess`NBCellSetOptions[nb, cellIdx,
+        Sequence @@ $iDocTranslatedCellOpts],
+    True, Null];
+
+(* --- セル分割 --- *)
+iDocSplitCell[] :=
+  Module[{nb, cellIdx},
+    {nb, cellIdx} = iDocResolveCursorCell[];
+    If[cellIdx === 0,
+      MessageDialog[iL["セル内にカーソルを置いてください。",
+        "Place cursor inside a cell."]];
+      Return[$Failed]];
+    DocSplitCell[nb, cellIdx]
+  ];
+
+DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{mode, showTrans, style, fullText, backText, frontText,
+          splitRatio, allCells, alternate, translation, translationSrc,
+          frontAlt, backAlt, frontTrans, backTrans, frontTransSrc, backTransSrc,
+          newCellIdx, privLevel, useFallback,
+          marker, markedText, markerPos},
+
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
+    NBAccess`NBInvalidateCellsCache[nb];
+
+    mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+    showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
+    style = NBAccess`NBCellStyle[nb, cellIdx];
+    fullText = NBAccess`NBCellGetText[nb, cellIdx];
+
+    If[!StringQ[fullText] || StringLength[fullText] < 2,
+      MessageDialog[iL["テキストが短すぎます。", "Text too short to split."]];
+      Return[$Failed]];
+
+    (* カーソル位置の検出: マーカー挿入 → テキスト読取 → 位置特定 → Undo *)
+    marker = "<<DOCSPLIT-" <> ToString[RandomInteger[{100000, 999999}]] <> ">>";
+    NotebookWrite[nb, marker];
+    NBAccess`NBInvalidateCellsCache[nb];
+    markedText = NBAccess`NBCellGetText[nb, cellIdx];
+    FrontEndTokenExecute[nb, "Undo"];
+    NBAccess`NBInvalidateCellsCache[nb];
+
+    markerPos = StringPosition[markedText, marker];
+    If[Length[markerPos] === 0,
+      MessageDialog[iL["カーソルをセル内の分割位置に置いてください。",
+        "Place cursor at the split position."]];
+      Return[$Failed]];
+
+    frontText = StringTake[markedText, markerPos[[1, 1]] - 1];
+    backText = StringDrop[markedText, markerPos[[1, 2]]];
+
+    If[StringLength[frontText] === 0 || StringLength[backText] === 0,
+      MessageDialog[iL["セルの先頭・末尾ではなく途中にカーソルを置いてください。",
+        "Place cursor in the middle of the cell, not at the start or end."]];
+      Return[$Failed]];
+
+    splitRatio = N[StringLength[frontText] / StringLength[fullText]];
+
+    (* 保存データ取得 *)
+    alternate = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+    translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+    translationSrc = NBAccess`NBCellGetTaggingRule[nb, cellIdx,
+      $iDocTagTranslationSrc];
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+    useFallback = ClaudeCode`GetPaletteFallback[];
+
+    (* 保存データを比率で分割 *)
+    {frontAlt, backAlt} = If[StringQ[alternate] && StringLength[alternate] > 0,
+      iDocProportionalSplit[alternate, splitRatio], {"", ""}];
+    {frontTrans, backTrans} = If[StringQ[translation] &&
+        StringLength[translation] > 0,
+      iDocProportionalSplit[translation, splitRatio], {"", ""}];
+    {frontTransSrc, backTransSrc} = If[StringQ[translationSrc] &&
+        StringLength[translationSrc] > 0,
+      iDocProportionalSplit[translationSrc, splitRatio], {"", ""}];
+
+    (* --- 前半セル (現在のセル) を更新 --- *)
+    NBAccess`NBInvalidateCellsCache[nb];
+    NBAccess`NBCellWriteText[nb, cellIdx, frontText];
+    If[frontTrans =!= "",
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+        $iDocTagTranslation, frontTrans]];
+    If[frontTransSrc =!= "",
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+        $iDocTagTranslationSrc, frontTransSrc]];
+
+    (* --- 後半セルを挿入 --- *)
+    NBAccess`NBInvalidateCellsCache[nb];
+    allCells = Cells[nb];
+    SelectionMove[allCells[[cellIdx]], After, Cell];
+    NotebookWrite[nb, Cell[backText,
+      If[MemberQ[{"Text", "Section", "Subsection", "Subsubsection",
+                   "Title", "Subtitle", "Chapter"}, style], style, "Text"]]];
+    NBAccess`NBInvalidateCellsCache[nb];
+    newCellIdx = cellIdx + 1;
+
+    (* 後半セルにモードとスタイルを設定 *)
+    If[StringQ[mode],
+      NBAccess`NBCellSetTaggingRule[nb, newCellIdx, $iDocTagMode, mode];
+      iDocApplyModeStyle[nb, newCellIdx, mode, showTrans];
+      If[backTrans =!= "",
+        NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+          $iDocTagTranslation, backTrans]];
+      If[backTransSrc =!= "",
+        NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+          $iDocTagTranslationSrc, backTransSrc]];
+      If[TrueQ[showTrans],
+        NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+          $iDocTagShowTranslation, True]]];
+
+    (* --- プロンプト処理 --- *)
+    (* まず比率分割のプロンプトを即座に設定（LLM完了前のトグル安全性確保） *)
+    If[frontAlt =!= "",
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+        $iDocTagAlternate, frontAlt]];
+    If[backAlt =!= "",
+      NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+        $iDocTagAlternate, backAlt]];
+
+    Which[
+      (* パラグラフ or 翻訳表示中 + プロンプトあり → LLMで分割（非同期で上書き） *)
+      (mode === "paragraph" || TrueQ[showTrans]) &&
+          StringQ[alternate] && StringLength[alternate] > 0,
+        Module[{displayedFront = frontText, displayedBack = backText,
+                prompt},
+          (* 翻訳表示中なら翻訳元パラグラフを使う *)
+          If[TrueQ[showTrans] && StringQ[translationSrc],
+            displayedFront = frontTransSrc;
+            displayedBack = backTransSrc];
+          prompt = iDocSplitPromptFn[alternate, displayedFront, displayedBack];
+          With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
+                fAlt = frontAlt, bAlt = backAlt},
+            NBAccess`$NBLLMQueryFunc[prompt,
+              Function[response,
+                Module[{parts, fp, bp, curMode1, curMode2},
+                  NBAccess`NBInvalidateCellsCache[nb2];
+                  If[StringQ[response] && StringContainsQ[response, "[FRONT]"] &&
+                     StringContainsQ[response, "[BACK]"],
+                    parts = StringSplit[response, {"[FRONT]", "[BACK]"}];
+                    parts = StringTrim /@ Select[parts, StringLength[#] > 0 &];
+                    If[Length[parts] >= 2,
+                      fp = parts[[1]]; bp = parts[[2]],
+                      fp = fAlt; bp = bAlt],
+                    fp = fAlt; bp = bAlt];
+                  (* モードに応じて適切な場所に保存 *)
+                  curMode1 = NBAccess`NBCellGetTaggingRule[nb2, ci1, $iDocTagMode];
+                  If[curMode1 === "paragraph" || curMode1 === "translated",
+                    (* パラグラフ表示中: alternate がプロンプト格納場所 *)
+                    NBAccess`NBCellSetTaggingRule[nb2, ci1,
+                      $iDocTagAlternate, fp],
+                    If[curMode1 === "idea",
+                      (* プロンプト表示中: テキストがプロンプト、alternate がパラグラフ *)
+                      NBAccess`NBInvalidateCellsCache[nb2];
+                      NBAccess`NBCellWriteText[nb2, ci1, fp]]];
+                  curMode2 = NBAccess`NBCellGetTaggingRule[nb2, ci2, $iDocTagMode];
+                  If[curMode2 === "paragraph" || curMode2 === "translated",
+                    NBAccess`NBCellSetTaggingRule[nb2, ci2,
+                      $iDocTagAlternate, bp],
+                    If[curMode2 === "idea",
+                      NBAccess`NBInvalidateCellsCache[nb2];
+                      NBAccess`NBCellWriteText[nb2, ci2, bp]]];
+                  Quiet[CurrentValue[nb2, WindowStatusArea] =
+                    iL["プロンプト分割完了", "Prompt split done"]];
+                  RunScheduledTask[With[{pNb = nb2},
+                    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+              nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]],
+
+      True, Null];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["セルを分割しました。", "Cell split."]];
+    RunScheduledTask[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
+  ];
+
+(* --- セル合併 --- *)
+iDocMergeCells[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] < 2,
+      MessageDialog[iL["2つ以上のセルを選択してください。",
+        "Select 2 or more cells."]];
+      Return[$Failed]];
+    DocMergeCells[nb, cellIdxs]
+  ];
+
+DocMergeCells[nb_NotebookObject, cellIdxs_List] :=
+  Module[{first, mode1, showTrans1, style1,
+          ideas = {}, paragraphs = {}, transs = {}, transSrcs = {},
+          mergedIdea, mergedPara, mergedTrans, mergedTransSrc,
+          deletedCount = 0, hasIdea, hasPara, hasTrans,
+          curMode, curText, curAlt, curTrans, curTransSrc, curShowTrans,
+          finalMode},
+    If[Length[cellIdxs] < 2, Return[$Failed]];
+    first = First[cellIdxs];
+    NBAccess`NBInvalidateCellsCache[nb];
+
+    mode1 = NBAccess`NBCellGetTaggingRule[nb, first, $iDocTagMode];
+    showTrans1 = NBAccess`NBCellGetTaggingRule[nb, first, $iDocTagShowTranslation];
+    style1 = NBAccess`NBCellStyle[nb, first];
+
+    (* 全セルから各レイヤーのデータを復元して収集 *)
+    Do[
+      curMode = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagMode];
+      curShowTrans = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagShowTranslation];
+      curText = NBAccess`NBCellGetText[nb, idx];
+      curAlt = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagAlternate];
+      curTrans = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagTranslation];
+      curTransSrc = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagTranslationSrc];
+
+      (* 表示モードに応じてプロンプト/パラグラフを正しく振り分ける *)
+      Which[
+        (* 翻訳表示中: 表示=翻訳, translationSrc=パラグラフ, alternate=プロンプト *)
+        TrueQ[curShowTrans] && curMode === "paragraph",
+          AppendTo[ideas, curAlt];
+          AppendTo[paragraphs, curTransSrc];
+          AppendTo[transs, curText];
+          AppendTo[transSrcs, curTransSrc],
+        (* 翻訳表示中 (translated モード): 表示=翻訳, translationSrc=元テキスト *)
+        TrueQ[curShowTrans],
+          AppendTo[ideas, None];
+          AppendTo[paragraphs, curTransSrc];
+          AppendTo[transs, curText];
+          AppendTo[transSrcs, curTransSrc],
+        (* アイデア表示中: 表示=プロンプト, alternate=パラグラフ *)
+        curMode === "idea",
+          AppendTo[ideas, curText];
+          AppendTo[paragraphs, curAlt];
+          AppendTo[transs, curTrans];
+          AppendTo[transSrcs, curTransSrc],
+        (* パラグラフ表示中: 表示=パラグラフ, alternate=プロンプト *)
+        curMode === "paragraph",
+          AppendTo[ideas, curAlt];
+          AppendTo[paragraphs, curText];
+          AppendTo[transs, curTrans];
+          AppendTo[transSrcs, curTransSrc],
+        (* translated モード(元テキスト表示中): 表示=元テキスト *)
+        curMode === "translated",
+          AppendTo[ideas, None];
+          AppendTo[paragraphs, curText];
+          AppendTo[transs, curTrans];
+          AppendTo[transSrcs, curTransSrc],
+        (* 普通のセル: プロンプトもパラグラフもない *)
+        True,
+          AppendTo[ideas, None];
+          AppendTo[paragraphs, curText];
+          AppendTo[transs, curTrans];
+          AppendTo[transSrcs, curTransSrc]
+      ],
+    {idx, cellIdxs}];
+
+    (* 各レイヤーを結合（有効な文字列のみ） *)
+    mergedIdea = StringRiffle[
+      Select[ideas, StringQ[#] && StringTrim[#] =!= "" &], " "];
+    mergedPara = StringRiffle[
+      Select[paragraphs, StringQ[#] && StringTrim[#] =!= "" &], " "];
+    mergedTrans = StringRiffle[
+      Select[transs, StringQ[#] && StringTrim[#] =!= "" &], " "];
+    mergedTransSrc = StringRiffle[
+      Select[transSrcs, StringQ[#] && StringTrim[#] =!= "" &], " "];
+
+    hasIdea = StringLength[mergedIdea] > 0;
+    hasPara = StringLength[mergedPara] > 0;
+    hasTrans = StringLength[mergedTrans] > 0;
+
+    (* 後ろのセルから削除（インデックスがずれないように） *)
+    Do[
+      NBAccess`NBInvalidateCellsCache[nb];
+      Module[{cells = Cells[nb]},
+        If[idx <= Length[cells],
+          NotebookDelete[cells[[idx]]];
+          deletedCount++]],
+    {idx, Reverse[Rest[cellIdxs]]}];
+
+    (* 最初のセルの表示モードを決定 *)
+    finalMode = Which[
+      (* 元々のモードを尊重 *)
+      mode1 === "idea" && hasIdea, "idea",
+      mode1 === "paragraph" && hasPara, "paragraph",
+      mode1 === "translated", "translated",
+      (* パラグラフがあればパラグラフモード *)
+      hasPara && hasIdea, "paragraph",
+      hasPara, "paragraph",
+      hasIdea, "idea",
+      True, None];
+
+    (* 最初のセルに結合結果を書き込み *)
+    NBAccess`NBInvalidateCellsCache[nb];
+
+    Which[
+      (* 翻訳表示中だった場合: 翻訳を表示、パラグラフを translationSrc に *)
+      TrueQ[showTrans1] && hasTrans,
+        NBAccess`NBCellWriteText[nb, first, mergedTrans];
+        If[hasIdea,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagAlternate, mergedIdea]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslation, mergedTrans];
+        If[StringLength[mergedTransSrc] > 0,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslationSrc, mergedTransSrc],
+          If[hasPara, NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslationSrc, mergedPara]]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagShowTranslation, True];
+        If[StringQ[finalMode],
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagMode, finalMode]],
+
+      (* アイデアモード: プロンプトを表示、パラグラフを alternate に *)
+      finalMode === "idea",
+        NBAccess`NBCellWriteText[nb, first, mergedIdea];
+        If[hasPara,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagAlternate, mergedPara]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagMode, "idea"];
+        If[hasTrans,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslation, mergedTrans]];
+        If[StringLength[mergedTransSrc] > 0,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslationSrc, mergedTransSrc]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagShowTranslation, False],
+
+      (* パラグラフモード: パラグラフを表示、プロンプトを alternate に *)
+      finalMode === "paragraph",
+        NBAccess`NBCellWriteText[nb, first, mergedPara];
+        If[hasIdea,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagAlternate, mergedIdea]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagMode, "paragraph"];
+        If[hasTrans,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslation, mergedTrans]];
+        If[StringLength[mergedTransSrc] > 0,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslationSrc, mergedTransSrc]];
+        NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagShowTranslation, False],
+
+      (* 普通のセル *)
+      True,
+        NBAccess`NBCellWriteText[nb, first, mergedPara];
+        If[hasTrans,
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagMode, "translated"];
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslation, mergedTrans];
+          NBAccess`NBCellSetTaggingRule[nb, first, $iDocTagTranslationSrc, mergedPara]]
+    ];
+
+    (* 視覚スタイル更新 *)
+    iDocApplyModeStyle[nb, first,
+      NBAccess`NBCellGetTaggingRule[nb, first, $iDocTagMode],
+      NBAccess`NBCellGetTaggingRule[nb, first, $iDocTagShowTranslation]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[ToString[deletedCount + 1] <> " セルを合併しました。",
+         ToString[deletedCount + 1] <> " cells merged."]];
+    RunScheduledTask[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
+  ];
+
+(* ============================================================
    Note セル挿入
    ============================================================ *)
 
@@ -1239,6 +2219,39 @@ $iDocNoteCellOpts = {
   FontColor -> GrayLevel[0.35],
   CellMargins -> {{66, 20}, {4, 4}},
   CellDingbat -> StyleBox["\[FilledSmallSquare]", FontColor -> RGBColor[0.85, 0.78, 0.5]]
+};
+
+(* Dictionary スタイルのセル定義: 薄い青緑背景、用語辞書用 *)
+$iDocDictionaryCellOpts = {
+  CellFrame -> {{2, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.35, 0.65, 0.65],
+  Background -> RGBColor[0.92, 0.97, 0.97],
+  FontSize -> 11,
+  FontColor -> GrayLevel[0.3],
+  CellMargins -> {{66, 20}, {4, 4}},
+  CellDingbat -> StyleBox["\[FilledSmallSquare]", FontColor -> RGBColor[0.35, 0.65, 0.65]]
+};
+
+(* Directive スタイルのセル定義: 薄い赤紫背景、LLM指示用 *)
+$iDocDirectiveCellOpts = {
+  CellFrame -> {{2, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.65, 0.35, 0.5],
+  Background -> RGBColor[0.97, 0.92, 0.95],
+  FontSize -> 11,
+  FontColor -> GrayLevel[0.3],
+  CellMargins -> {{66, 20}, {4, 4}},
+  CellDingbat -> StyleBox["\[FilledSmallSquare]", FontColor -> RGBColor[0.65, 0.35, 0.5]]
+};
+
+(* Bibliography スタイルのセル定義: 薄い灰青背景、参考文献管理用 *)
+$iDocBibliographyCellOpts = {
+  CellFrame -> {{2, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.4, 0.45, 0.6],
+  Background -> RGBColor[0.93, 0.94, 0.97],
+  FontSize -> 11,
+  FontColor -> GrayLevel[0.3],
+  CellMargins -> {{66, 20}, {4, 4}},
+  CellDingbat -> StyleBox["\[FilledSmallSquare]", FontColor -> RGBColor[0.4, 0.45, 0.6]]
 };
 
 DocInsertNote[nb_NotebookObject] :=
@@ -1266,12 +2279,411 @@ DocInsertNote[nb_NotebookObject] :=
   ];
 
 (* ============================================================
-   Note セル判定ヘルパー
+   Dictionary セル挿入
    ============================================================ *)
+
+DocInsertDictionary[nb_NotebookObject] :=
+  Module[{dictCell, hasDictStyle, defaultContent},
+    defaultContent = "{{<<Japanese>>, <<English>>, <<Context>>}, " <>
+      "{\"状相\", \"configuration\", \"セルオートマトン\"}, " <>
+      "{\"universality\", \"万能性\", \"計算モデル\"}}";
+    hasDictStyle = Quiet[
+      MemberQ[
+        Cases[
+          Quiet[Options[nb, StyleDefinitions]],
+          Cell[StyleData["Dictionary"], ___], Infinity],
+        _Cell]];
+    If[TrueQ[hasDictStyle],
+      NotebookWrite[nb, Cell[defaultContent, "Dictionary"]],
+      dictCell = Cell[
+        defaultContent,
+        "Dictionary",
+        Sequence @@ $iDocDictionaryCellOpts
+      ];
+      NotebookWrite[nb, dictCell]
+    ];
+  ];
+
+(* ============================================================
+   Directive セル挿入
+   ============================================================ *)
+
+DocInsertDirective[nb_NotebookObject] :=
+  Module[{dirCell, hasDirStyle},
+    hasDirStyle = Quiet[
+      MemberQ[
+        Cases[
+          Quiet[Options[nb, StyleDefinitions]],
+          Cell[StyleData["Directive"], ___], Infinity],
+        _Cell]];
+    If[TrueQ[hasDirStyle],
+      NotebookWrite[nb,
+        Cell[iL["ここに LLM への指示を記載...", "Write LLM directives here..."],
+          "Directive"]],
+      dirCell = Cell[
+        iL["ここに LLM への指示を記載...", "Write LLM directives here..."],
+        "Directive",
+        Sequence @@ $iDocDirectiveCellOpts
+      ];
+      NotebookWrite[nb, dirCell]
+    ];
+  ];
+
+(* ============================================================
+   Bibliography セル挿入
+   ============================================================ *)
+
+DocInsertBibliography[nb_NotebookObject] :=
+  Module[{bibCell, hasBibStyle, defaultContent},
+    defaultContent = "{{<<Key>>, <<Author>>, <<Year>>, <<Title>>}, " <>
+      "{\"morita1996\", \"K. Morita\", \"1996\", \"Universality of a reversible two-counter machine\"}}";
+    hasBibStyle = Quiet[
+      MemberQ[
+        Cases[
+          Quiet[Options[nb, StyleDefinitions]],
+          Cell[StyleData["Bibliography"], ___], Infinity],
+        _Cell]];
+    If[TrueQ[hasBibStyle],
+      NotebookWrite[nb, Cell[defaultContent, "Bibliography"]],
+      bibCell = Cell[
+        defaultContent,
+        "Bibliography",
+        Sequence @@ $iDocBibliographyCellOpts
+      ];
+      NotebookWrite[nb, bibCell]
+    ];
+  ];
+
+(* ============================================================
+   図メタデータ編集
+   ============================================================ *)
+
+DocEditFigureMeta[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{cellExpr, label, caption},
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[!NBAccess`NBCellHasImage[cellExpr],
+      MessageDialog[iL["このセルには画像がありません。",
+        "This cell does not contain an image."]];
+      Return[$Failed]];
+    label = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigLabel];
+    caption = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigCaption];
+    If[!StringQ[label], label = ""];
+    If[!StringQ[caption], caption = ""];
+    Module[{dlgLabel = label, dlgCaption = caption},
+      DialogInput[
+        Column[{
+          Style[iL["図メタデータ", "Figure Metadata"], Bold, 12],
+          Spacer[5],
+          Row[{Style[iL["ラベル: ", "Label: "], Bold, 10],
+            InputField[Dynamic[dlgLabel], String, FieldSize -> 25]}],
+          Style[iL["例: ca-rule110", "e.g. ca-rule110"], 8, GrayLevel[0.5]],
+          Spacer[3],
+          Row[{Style[iL["キャプション: ", "Caption: "], Bold, 10],
+            InputField[Dynamic[dlgCaption], String, FieldSize -> 25]}],
+          Spacer[5],
+          Row[{
+            DefaultButton[
+              (NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+                $iDocTagFigLabel, dlgLabel];
+               NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+                $iDocTagFigCaption, dlgCaption];
+               DialogReturn[])],
+            Button[iL["参照コピー", "Copy Ref"],
+              (CopyToClipboard["<<fig:" <> dlgLabel <> ">>"];
+               NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+                $iDocTagFigLabel, dlgLabel];
+               NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+                $iDocTagFigCaption, dlgCaption];
+               DialogReturn[])],
+            CancelButton[DialogReturn[]]
+          }, Spacer[10]]
+        }, Alignment -> Left],
+        WindowTitle -> iL["図メタデータ", "Figure Metadata"]]]
+  ];
+
+iDocEditFigureMetaAction[] :=
+  Module[{nb, cellIdx},
+    {nb, cellIdx} = iDocResolveTargetCell[];
+    If[cellIdx === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    DocEditFigureMeta[nb, cellIdx]
+  ];
+
+iDocInsertBibliographyAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocInsertBibliography[nb]
+  ];
+
+(* ============================================================
+   参照挿入ダイアログ
+   ノートブック内の図・文献を一覧表示し、クリックでカーソル位置に挿入。
+   ============================================================ *)
+
+iDocInsertReferenceAction[] :=
+  Module[{nb, figTable, bibTable, figItems, bibItems, allItems},
+    nb = iDocUserNotebook[];
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    NBAccess`NBInvalidateCellsCache[nb];
+    figTable = iDocBuildFigureTable[nb];
+    bibTable = iDocCollectBibliography[nb];
+
+    If[Length[figTable] === 0 && Length[bibTable] === 0,
+      MessageDialog[iL[
+        "図メタデータや参考文献がありません。\n" <>
+        "「図メタ」で図にラベルを設定するか、「文献」で参考文献セルを追加してください。",
+        "No figure metadata or bibliography found.\n" <>
+        "Use 'Fig Meta' to label figures or 'Bib' to add a bibliography cell."]];
+      Return[$Failed]];
+
+    (* 図の一覧: ボタン化 *)
+    figItems = KeyValueMap[
+      Function[{label, entry},
+        Button[
+          Tooltip[
+            Row[{
+              Style["Fig " <> ToString[entry["Number"]], Bold, 10],
+              Style[" " <> If[entry["Caption"] =!= "", entry["Caption"],
+                label], 9, GrayLevel[0.4]]
+            }],
+            "<<fig:" <> label <> ">>"],
+          (NotebookWrite[nb, "<<fig:" <> label <> ">>"];
+           DialogReturn[]),
+          Appearance -> "Frameless",
+          ImageSize -> {260, Automatic}]],
+      figTable];
+
+    (* 文献の一覧: ボタン化 *)
+    bibItems = KeyValueMap[
+      Function[{key, entry},
+        Button[
+          Tooltip[
+            Row[{
+              Style[key, Bold, 10],
+              Style[" " <> entry["Author"] <> " " <> entry["Year"],
+                9, GrayLevel[0.4]]
+            }],
+            "<<cite:" <> key <> ">>"],
+          (NotebookWrite[nb, "<<cite:" <> key <> ">>"];
+           DialogReturn[]),
+          Appearance -> "Frameless",
+          ImageSize -> {260, Automatic}]],
+      bibTable];
+
+    DialogInput[
+      Column[Flatten[{
+        Style[iL["参照を挿入", "Insert Reference"], Bold, 12],
+        Spacer[3],
+        If[Length[figItems] > 0,
+          {Style[iL[" 図", " Figures"], Bold, 9, GrayLevel[0.3]],
+           Sequence @@ figItems, Spacer[3]},
+          {}],
+        If[Length[bibItems] > 0,
+          {Style[iL[" 文献", " Citations"], Bold, 9, GrayLevel[0.3]],
+           Sequence @@ bibItems},
+          {}],
+        Spacer[5],
+        CancelButton[DialogReturn[]]
+      }], Alignment -> Left],
+      WindowTitle -> iL["参照挿入", "Insert Reference"],
+      WindowSize -> {280, Automatic}]
+  ];
 
 (* セルが Note スタイルかどうかを判定する *)
 iDocIsNoteCell[nb_NotebookObject, cellIdx_Integer] :=
   NBAccess`NBCellStyle[nb, cellIdx] === "Note";
+
+(* セルが Dictionary スタイルかどうかを判定する *)
+iDocIsDictionaryCell[nb_NotebookObject, cellIdx_Integer] :=
+  NBAccess`NBCellStyle[nb, cellIdx] === "Dictionary";
+
+(* セルが Directive スタイルかどうかを判定する *)
+iDocIsDirectiveCell[nb_NotebookObject, cellIdx_Integer] :=
+  NBAccess`NBCellStyle[nb, cellIdx] === "Directive";
+
+(* セルが Note/Dictionary/Directive/Bibliography のいずれか（メタセル）かどうかを判定する *)
+iDocIsMetaCell[nb_NotebookObject, cellIdx_Integer] :=
+  MemberQ[{"Note", "Dictionary", "Directive", "Bibliography"},
+    NBAccess`NBCellStyle[nb, cellIdx]];
+
+(* ============================================================
+   エクスポート: 図テーブル・参考文献・参照解決
+   ============================================================ *)
+
+(* ノートブック内の画像セルを走査して図テーブルを構築する。
+   戻り値: <|"label" -> <|"Number" -> n, "Caption" -> "...", "CellIdx" -> i|>, ...|> *)
+iDocBuildFigureTable[nb_NotebookObject] :=
+  Module[{nCells, table = <||>, figNum = 0, cellExpr, label, caption},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[!iDocIsMetaCell[nb, i] &&
+         !TrueQ[NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagExcludeExport]],
+        cellExpr = NBAccess`NBCellRead[nb, i];
+        If[NBAccess`NBCellHasImage[cellExpr],
+          figNum++;
+          label = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagFigLabel];
+          caption = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagFigCaption];
+          If[!StringQ[label] || StringTrim[label] === "",
+            label = "fig" <> ToString[figNum]];
+          If[!StringQ[caption], caption = ""];
+          table[label] = <|"Number" -> figNum, "Caption" -> caption,
+            "CellIdx" -> i|>]],
+    {i, nCells}];
+    table
+  ];
+
+(* ノートブック内の Bibliography セルから参考文献を収集する。
+   戻り値: <|"key" -> <|"Author" -> "...", "Year" -> "...", "Title" -> "..."|>, ...|> *)
+iDocCollectBibliography[nb_NotebookObject] :=
+  Module[{nCells, text, bib = <||>, parsed, cleanText},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[NBAccess`NBCellStyle[nb, i] === "Bibliography",
+        text = Quiet[NBAccess`NBCellGetText[nb, i]];
+        If[StringQ[text] && StringLength[text] > 0,
+          (* <<Key>> 等のプレースホルダーを含むヘッダー行を除去してからパース。
+             <<...>> は Mathematica の Get 演算子として解釈されるため
+             ToExpression が失敗する。 *)
+          cleanText = StringReplace[text,
+            RegularExpression["\\{<<[^>]*>>(,\\s*<<[^>]*>>)*\\},?\\s*"] -> ""];
+          (* 外側の {} が消えている可能性があるので補完 *)
+          If[!StringStartsQ[StringTrim[cleanText], "{"],
+            cleanText = "{" <> cleanText <> "}"];
+          parsed = Quiet[ToExpression[cleanText]];
+          If[ListQ[parsed],
+            Do[
+              If[ListQ[entry] && Length[entry] >= 4,
+                bib[entry[[1]]] = <|"Author" -> entry[[2]],
+                  "Year" -> entry[[3]], "Title" -> entry[[4]]|>],
+            {entry, parsed}]]]],
+    {i, nCells}];
+    bib
+  ];
+
+(* テキスト内の <<fig:label>> と <<cite:key>> を解決する *)
+iDocResolveReferences[text_String, figTable_Association, bibTable_Association,
+    format_String] :=
+  Module[{result = text},
+    (* <<fig:label>> → 図参照 *)
+    result = StringReplace[result,
+      RegularExpression["<<fig:([^>]+)>>"] :>
+        iDocResolveFigRef["$1", figTable, format]];
+    (* <<cite:key>> → 引用 *)
+    result = StringReplace[result,
+      RegularExpression["<<cite:([^>]+)>>"] :>
+        iDocResolveCiteRef["$1", bibTable, format]];
+    result
+  ];
+
+iDocResolveFigRef[lbl_String, figTable_Association, format_String] :=
+  Module[{entry = Lookup[figTable, lbl, None]},
+    If[AssociationQ[entry],
+      If[format === "markdown",
+        "[Figure " <> ToString[entry["Number"]] <> "](#fig-" <> lbl <> ")",
+        "\\figurename~\\ref{fig:" <> lbl <> "}"],
+      If[format === "markdown",
+        "[Figure ??]",
+        "\\figurename~\\ref{fig:" <> lbl <> "}"]]
+  ];
+
+iDocResolveCiteRef[key_String, bibTable_Association, format_String] :=
+  Module[{entry = Lookup[bibTable, key, None]},
+    If[AssociationQ[entry],
+      If[format === "markdown",
+        "[" <> entry["Author"] <> ", " <> entry["Year"] <> "]" <>
+          "(#ref-" <> key <> ")",
+        "\\cite{" <> key <> "}"],
+      If[format === "markdown",
+        "[??]",
+        "\\cite{" <> key <> "}"]]
+  ];
+
+(* ============================================================
+   エクスポート: 言語検出・翻訳ヘルパー
+   ============================================================ *)
+
+(* テキストに日本語（CJK）文字が含まれるかを判定 *)
+iDocContainsJapanese[text_String] :=
+  StringContainsQ[text, RegularExpression["[\\x{3000}-\\x{9FFF}\\x{F900}-\\x{FAFF}]"]];
+
+(* ノートブックのエクスポート時の表示言語を検出する。
+   翻訳表示中のセルが多数なら翻訳モード、そうでなければ原文モード。 *)
+iDocDetectExportLanguage[nb_NotebookObject] :=
+  Module[{nCells, transCount = 0, totalCount = 0, mode, showTrans},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[!iDocIsMetaCell[nb, i],
+        mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
+        showTrans = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagShowTranslation];
+        If[StringQ[mode],
+          totalCount++;
+          If[TrueQ[showTrans], transCount++]]],
+    {i, nCells}];
+    If[totalCount > 0 && transCount > totalCount / 2,
+      iDocTranslationTarget[],  (* 翻訳ターゲット言語 *)
+      "source"]  (* 原文のまま *)
+  ];
+
+(* 文献タイトルを翻訳する（日本語→英語）。PDF コンテキストを参照して正確な英語タイトルを取得。 *)
+iDocTranslateBibTitle[entry_Association, targetLang_String] :=
+  Module[{title, pdfText, prompt, result},
+    title = Lookup[entry, "Title", ""];
+    If[!iDocContainsJapanese[title], Return[entry]];
+    If[targetLang === "source", Return[entry]];
+
+    (* PDF から英語タイトルを探す *)
+    pdfText = If[StringQ[Lookup[entry, "FilePath", ""]] &&
+      FileExistsQ[entry["FilePath"]],
+      Quiet[Check[
+        StringTake[Import[entry["FilePath"], "Plaintext"],
+          Min[2000, StringLength[Import[entry["FilePath"], "Plaintext"]]]],
+        ""]], ""];
+
+    prompt = "Translate the following bibliographic reference title to English.\n" <>
+      "If the reference is a thesis or dissertation, translate the title and add the type " <>
+      "(e.g., 'Master's thesis' or 'PhD dissertation').\n" <>
+      "If PDF text is provided, look for the English title in the text and use it exactly.\n\n" <>
+      If[StringLength[pdfText] > 0,
+        "PDF text (first pages, may contain the English title):\n" <>
+        pdfText <> "\n\n", ""] <>
+      "Author: " <> Lookup[entry, "Author", ""] <> "\n" <>
+      "Japanese title: " <> title <> "\n\n" <>
+      "CRITICAL: Output ONLY the English title, nothing else.";
+
+    result = Quiet[Check[
+      LLMSynthesize[prompt,
+        LLMEvaluator -> <|"Model" -> "claude-sonnet-4-20250514"|>],
+      $Failed]];
+    If[StringQ[result] && StringLength[result] > 5 &&
+       !iDocContainsJapanese[result],
+      Join[entry, <|"Title" -> StringTrim[result]|>],
+      entry]
+  ];
+
+(* 図キャプションをターゲット言語に翻訳する *)
+iDocTranslateFigCaption[caption_String, targetLang_String] :=
+  Module[{prompt, result},
+    If[StringLength[caption] < 2, Return[caption]];
+    (* 翻訳不要: ターゲットと同じ言語 *)
+    If[targetLang === "source", Return[caption]];
+    If[targetLang === "English" && !iDocContainsJapanese[caption], Return[caption]];
+    If[targetLang =!= "English" && iDocContainsJapanese[caption], Return[caption]];
+
+    prompt = "Translate the following figure caption to " <> targetLang <> ".\n" <>
+      "Output ONLY the translated caption, nothing else.\n\n" <>
+      "Caption: " <> caption;
+    result = Quiet[Check[
+      LLMSynthesize[prompt,
+        LLMEvaluator -> <|"Model" -> "claude-sonnet-4-20250514"|>],
+      $Failed]];
+    If[StringQ[result] && StringLength[result] > 0,
+      StringTrim[result], caption]
+  ];
 
 (* ============================================================
    エクスポート: 共通ヘルパー
@@ -1468,20 +2880,38 @@ iDocInputCellToCode[nb_NotebookObject, cellIdx_Integer, format_String] :=
    ============================================================ *)
 
 iDocOutputCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
-    imgCounter_Integer, format_String] :=
-  Module[{cellExpr, hasImage, text, imgFile, imgName},
+    imgCounter_Integer, format_String, figTable_Association:<||>] :=
+  Module[{cellExpr, hasImage, text, imgFile, imgName, figLabel, figCaption, figEntry},
     cellExpr = NBAccess`NBCellRead[nb, cellIdx];
     hasImage = NBAccess`NBCellHasImage[cellExpr];
     If[hasImage,
-      (* 画像を含む Output: 画像としてエクスポート *)
-      imgName = "img_" <> ToString[imgCounter];
-      imgFile = iDocExportCellImage[nb, cellIdx, outDir, imgName];
+      (* 図メタデータ取得 *)
+      figLabel = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigLabel];
+      figCaption = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigCaption];
+      If[!StringQ[figLabel] || StringTrim[figLabel] === "",
+        figLabel = "fig" <> ToString[imgCounter]];
+      If[!StringQ[figCaption], figCaption = ""];
+      figEntry = Lookup[figTable, figLabel, None];
+
+      (* 画像をエクスポート (ラベルをファイル名に使用) *)
+      imgFile = iDocExportCellImage[nb, cellIdx, outDir, figLabel];
       If[StringQ[imgFile],
-        Module[{relPath = FileNameTake[imgFile]},
+        Module[{relPath = FileNameTake[imgFile], figNumStr},
+          figNumStr = ToString[If[AssociationQ[figEntry],
+            figEntry["Number"], imgCounter]];
           If[format === "markdown",
-            "![" <> imgName <> "](" <> relPath <> ")",
-            "\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.8\\textwidth]{" <>
-              relPath <> "}\n\\end{figure}"]],
+            "![" <>
+              If[figCaption =!= "",
+                "Figure " <> figNumStr <> ": " <> figCaption,
+                "Figure " <> figNumStr] <>
+              "](" <> relPath <> ")" <>
+              "{#fig-" <> figLabel <> "}",
+            (* LaTeX: figure 環境 *)
+            "\\begin{figure}[h]\n" <>
+            "\\centerline{\\includegraphics[scale=.8]{" <> relPath <> "}}\n" <>
+            "\\caption{" <> figCaption <> "}\n" <>
+            "\\label{fig:" <> figLabel <> "}\n" <>
+            "\\end{figure}"]],
         (* 画像エクスポート失敗: テキストにフォールバック *)
         text = NBAccess`NBCellGetText[nb, cellIdx];
         If[StringQ[text], text, ""]],
@@ -1516,9 +2946,12 @@ iDocDisplayMathToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
    エクスポート: テキストセル処理
    ============================================================ *)
 
-iDocTextCellToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
+iDocTextCellToExport[nb_NotebookObject, cellIdx_Integer, format_String,
+    styleRemap_Association:<||>] :=
   Module[{style, cellExpr, content, text, level},
     style = NBAccess`NBCellStyle[nb, cellIdx];
+    (* Directive で指定されたスタイル読み替えを適用 *)
+    style = Lookup[styleRemap, style, style];
     cellExpr = NBAccess`NBCellRead[nb, cellIdx];
     If[cellExpr === $Failed, Return[""]];
 
@@ -1577,60 +3010,99 @@ iDocTextCellToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
 
 (* 単一セルをエクスポート文字列に変換 *)
 iDocCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
-    imgCounter_Integer, format_String] :=
-  Module[{style, cellExpr, hasImage, result, mode, showTrans},
+    imgCounter_Integer, format_String,
+    figTable_Association:<||>, bibTable_Association:<||>,
+    styleRemap_Association:<||>, exportLang_String:"source"] :=
+  Module[{style, cellExpr, hasImage, result, mode, showTrans,
+          figLabel, figCaption, figEntry},
     style = NBAccess`NBCellStyle[nb, cellIdx];
 
-    (* Note セルはスキップ *)
-    If[iDocIsNoteCell[nb, cellIdx], Return[{Null, imgCounter}]];
+    (* Note/Dictionary/Directive/Bibliography セルはスキップ *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[{Null, imgCounter}]];
+
+    (* Export 除外フラグが設定されたセルはスキップ *)
+    If[TrueQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagExcludeExport]],
+      Return[{Null, imgCounter}]];
 
     (* ドキュメントモード確認: idea モードならパラグラフ版を使う *)
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     If[mode === "idea",
-      (* パラグラフ (展開済み) があればそちらを使ってテキストを一時差し替え *)
       Module[{para = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate]},
         If[StringQ[para] && StringTrim[para] =!= "",
-          (* パラグラフ版のテキストでテキストセルとして出力 *)
-          Return[{If[format === "markdown", para,  para], imgCounter}]]]];
+          para = iDocResolveReferences[para, figTable, bibTable, format];
+          Return[{para, imgCounter}]]]];
 
-    (* スタイルに応じた処理 *)
+    (* === 全セルタイプ共通: 画像を含むセルは先に図として出力 === *)
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    hasImage = NBAccess`NBCellHasImage[cellExpr];
+    If[hasImage,
+      figLabel = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigLabel];
+      figCaption = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigCaption];
+      If[!StringQ[figLabel] || StringTrim[figLabel] === "",
+        figLabel = "fig" <> ToString[imgCounter]];
+      If[!StringQ[figCaption], figCaption = ""];
+      (* 翻訳モードならキャプションをターゲット言語に翻訳 *)
+      If[figCaption =!= "" && exportLang =!= "source",
+        figCaption = iDocTranslateFigCaption[figCaption, exportLang]];
+      figEntry = Lookup[figTable, figLabel, None];
+      Module[{imgFile, figOut, textPart = ""},
+        imgFile = iDocExportCellImage[nb, cellIdx, outDir, figLabel];
+        If[StringQ[imgFile],
+          Module[{relPath = FileNameTake[imgFile], figNumStr},
+            figNumStr = ToString[If[AssociationQ[figEntry],
+              figEntry["Number"], imgCounter]];
+            figOut = If[format === "markdown",
+              (* Pandoc 互換形式: ![caption](file){#fig-label} *)
+              "![" <>
+                If[figCaption =!= "",
+                  "Figure " <> figNumStr <> ": " <> figCaption,
+                  "Figure " <> figNumStr] <>
+                "](" <> relPath <> ")" <>
+                "{#fig-" <> figLabel <> "}",
+              (* LaTeX *)
+              "\\begin{figure}[h]\n" <>
+              "\\centerline{\\includegraphics[scale=.8]{" <> relPath <> "}}\n" <>
+              "\\caption{" <> figCaption <> "}\n" <>
+              "\\label{fig:" <> figLabel <> "}\n" <>
+              "\\end{figure}"];
+            (* テキスト系セルなら本文テキストも出力 *)
+            If[MemberQ[{"Text", "Section", "Subsection", "Subsubsection",
+                        "Title", "Subtitle", "Chapter", "Item", "Subitem",
+                        "ItemNumbered", "SubitemNumbered"}, style],
+              textPart = iDocTextCellToExport[nb, cellIdx, format, styleRemap];
+              textPart = iDocResolveReferences[textPart, figTable, bibTable, format]];
+            Return[{If[textPart =!= "", textPart <> "\n\n" <> figOut, figOut],
+              imgCounter + 1}]],
+          (* 画像エクスポート失敗 → 通常処理にフォールスルー *)
+          Null]]];
+
+    (* スタイルに応じた処理 (画像なしセル) *)
     Which[
       (* Input セル → コードブロック *)
       style === "Input",
         {iDocInputCellToCode[nb, cellIdx, format], imgCounter},
 
-      (* Output/Print セル → 画像 or テキスト *)
+      (* Output/Print セル → テキスト出力 (画像は上で処理済み) *)
       MemberQ[{"Output", "Print", "Message", "Echo"}, style],
-        cellExpr = NBAccess`NBCellRead[nb, cellIdx];
-        hasImage = NBAccess`NBCellHasImage[cellExpr];
-        result = iDocOutputCellToExport[nb, cellIdx, outDir,
-          imgCounter, format];
-        {result, If[hasImage, imgCounter + 1, imgCounter]},
+        Module[{text = NBAccess`NBCellGetText[nb, cellIdx]},
+          If[StringQ[text] && StringTrim[text] =!= "",
+            {If[format === "markdown",
+              "```\n" <> text <> "\n```",
+              "\\begin{verbatim}\n" <> text <> "\n\\end{verbatim}"], imgCounter},
+            {Null, imgCounter}]],
 
       (* DisplayFormula 等 *)
       MemberQ[{"DisplayFormula", "DisplayFormulaNumbered"}, style],
         {iDocDisplayMathToExport[nb, cellIdx, format], imgCounter},
 
-      (* テキスト系セル *)
+      (* テキスト系セル (画像は上で処理済み) *)
       MemberQ[{"Title", "Subtitle", "Chapter", "Section", "Subsection",
                "Subsubsection", "Text", "Item", "Subitem",
                "ItemNumbered", "SubitemNumbered", "ItemParagraph",
                "SubitemParagraph"}, style],
-        (* テキストセルでも画像を含む場合がある *)
-        cellExpr = NBAccess`NBCellRead[nb, cellIdx];
-        If[NBAccess`NBCellHasImage[cellExpr],
-          Module[{imgName = "img_" <> ToString[imgCounter],
-                  imgFile, textPart, imgPart},
-            imgFile = iDocExportCellImage[nb, cellIdx, outDir, imgName];
-            textPart = iDocTextCellToExport[nb, cellIdx, format];
-            imgPart = If[StringQ[imgFile],
-              Module[{relPath = FileNameTake[imgFile]},
-                If[format === "markdown",
-                  "\n![" <> imgName <> "](" <> relPath <> ")",
-                  "\n\\includegraphics[width=0.8\\textwidth]{" <> relPath <> "}"]],
-              ""];
-            {textPart <> imgPart, imgCounter + 1}],
-          {iDocTextCellToExport[nb, cellIdx, format], imgCounter}],
+        Module[{text = iDocTextCellToExport[nb, cellIdx, format, styleRemap]},
+          text = iDocResolveReferences[text, figTable, bibTable, format];
+          {text, imgCounter}],
 
       (* それ以外: スキップ *)
       True,
@@ -1639,9 +3111,13 @@ iDocCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
   ];
 
 (* Markdown エクスポート *)
-DocExportMarkdown[nb_NotebookObject] :=
+Options[DocExportMarkdown] = {"MathFormat" -> False};
+
+DocExportMarkdown[nb_NotebookObject, opts:OptionsPattern[]] :=
   Module[{outDir, nCells, lines = {}, imgCounter = 1,
-          result, line, outFile, baseName},
+          result, line, outFile, baseName, figTable, bibTable, bibLines,
+          styleRemap, exportLang, mathFmt, mathCount = 0},
+    mathFmt = TrueQ[OptionValue["MathFormat"]];
     outDir = iDocEnsureExportDir[nb, "md"];
     If[outDir === $Failed,
       MessageDialog[iL[
@@ -1652,16 +3128,62 @@ DocExportMarkdown[nb_NotebookObject] :=
     NBAccess`NBInvalidateCellsCache[nb];
     nCells = NBAccess`NBCellCount[nb];
 
+    (* エクスポート言語を検出 *)
+    exportLang = iDocDetectExportLanguage[nb];
+
+    (* 図テーブル・参考文献・スタイル読み替えを構築 *)
+    figTable = iDocBuildFigureTable[nb];
+    bibTable = iDocCollectBibliography[nb];
+    styleRemap = iDocParseStyleRemap[nb];
+
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["Markdown エクスポート中...", "Exporting Markdown..."]];
 
     Do[
       Quiet[CurrentValue[nb, WindowStatusArea] =
-        iL["エクスポート中: ", "Exporting: "] <> ToString[i] <> "/" <> ToString[nCells]];
-      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "markdown"];
+        If[mathFmt,
+          iL["エクスポート中 (数式最適化): ", "Exporting (math): "] <>
+            ToString[i] <> "/" <> ToString[nCells],
+          iL["エクスポート中: ", "Exporting: "] <>
+            ToString[i] <> "/" <> ToString[nCells]]];
+      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "markdown",
+        figTable, bibTable, styleRemap, exportLang];
       If[line =!= Null && StringQ[line] && StringTrim[line] =!= "",
+        (* 数式最適化: テキスト行のみ対象 *)
+        If[mathFmt &&
+           !StringStartsQ[line, "```"] &&
+           !StringStartsQ[line, "!["] &&
+           !StringStartsQ[line, "$$"] &&
+           StringLength[line] > 20,
+          line = iDocLaTeXifyMath[line,
+            iDocExtractCellPDFContext[nb, i]];
+          mathCount++];
         AppendTo[lines, line]],
     {i, nCells}];
+
+    If[mathFmt && mathCount > 0,
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL[ToString[mathCount] <> " セルの数式を最適化しました。",
+           ToString[mathCount] <> " cells math-formatted."]]];
+
+    (* 参考文献セクションの出力: Bibliography セル + refSources を統合 *)
+    Module[{bibFromRefs, mergedBib = bibTable},
+      bibFromRefs = iDocBuildBibFromRefSources[nb];
+      Do[If[!KeyExistsQ[mergedBib, key], mergedBib[key] = bibFromRefs[key]],
+        {key, Keys[bibFromRefs]}];
+      (* 翻訳モードなら日本語タイトルを翻訳 *)
+      If[exportLang =!= "source",
+        Do[mergedBib[key] = iDocTranslateBibTitle[mergedBib[key], exportLang],
+          {key, Keys[mergedBib]}]];
+      If[Length[mergedBib] > 0,
+        bibLines = {"## References\n"};
+        Do[
+          AppendTo[bibLines,
+            "- <a id=\"ref-" <> key <> "\"></a>" <>
+            mergedBib[key]["Author"] <> " (" <> mergedBib[key]["Year"] <> "). " <>
+            mergedBib[key]["Title"] <> "."],
+        {key, Keys[mergedBib]}];
+        AppendTo[lines, StringRiffle[bibLines, "\n"]]]];
 
     (* ファイル出力 *)
     outFile = FileNameJoin[{outDir, baseName <> ".md"}];
@@ -1725,9 +3247,620 @@ iDocPostProcessLaTeXLists[text_String] :=
   ];
 
 (* LaTeX エクスポート *)
-DocExportLaTeX[nb_NotebookObject] :=
+
+(* ============================================================
+   LaTeX 数式自動フォーマット (LLM ベース)
+   テキスト中の数式表現を検出し、LaTeX 数式モードでラップする。
+   ============================================================ *)
+
+$iDocLaTeXifyPrompt =
+  "You are a LaTeX typesetting expert specializing in mathematical notation. " <>
+  "The following text will be included in a LaTeX document body (already inside \\begin{document}). " <>
+  "Your task is to identify ALL mathematical expressions, symbols, variables, and notation " <>
+  "in the text and wrap them in appropriate LaTeX inline math mode $...$.\n\n" <>
+  "CRITICAL RULES:\n" <>
+  "- Single variables used as mathematical symbols: $P$, $U$, $R$, $D$, $L$, $f_p$, $F_p$, $n$\n" <>
+  "- Subscripted terms: f_p → $f_p$, F_p → $F_p$\n" <>
+  "- Set notation: {0, 1} → $\\{0, 1\\}$\n" <>
+  "- Superscripts: Z² → $\\mathbb{Z}^2$\n" <>
+  "- Arrows: → or \\[RightArrow] → $\\to$\n" <>
+  "- Products/crosses: × or * (when used as math operator) → $\\times$\n" <>
+  "- Tuples with math: (Z², U, R, D, L, f_p) → $(\\mathbb{Z}^2, U, R, D, L, f_p)$\n" <>
+  "- Function signatures: f_p: D * L * U * R → U * R * D * L → $f_p: D \\times L \\times U \\times R \\to U \\times R \\times D \\times L$\n" <>
+  "- Equality statements with variables: U = R = D = L = {0, 1} → $U = R = D = L = \\{0, 1\\}$\n" <>
+  "- Model names with numbers used mathematically: 2PCA(4) → 2PCA(4) (keep as-is if not pure math)\n" <>
+  "- 2*2 or 2×2 blocks → $2 \\times 2$\n" <>
+  "- Do NOT change any non-mathematical text — preserve it EXACTLY\n" <>
+  "- Do NOT add any explanation, preamble, or commentary\n" <>
+  "- Do NOT add \\begin{document}, \\documentclass, or any LaTeX preamble commands\n" <>
+  "- Do NOT wrap entire sentences in math mode — only the mathematical parts\n" <>
+  "- Output ONLY the improved text, starting from the first character\n" <>
+  "- If reference context from a PDF is provided, use it to identify the correct mathematical notation\n\n" <>
+  "Text to format:\n";
+
+(* 同期 LLM 呼び出しで数式フォーマットする。
+   アタッチされた PDF の内容を参照コンテキストとして使用。
+   Opus モデルで高精度に変換する。 *)
+iDocLaTeXifyMath[text_String, pdfContext_String:""] :=
+  Module[{prompt, result, model},
+    (* 短すぎるテキストやセクション見出しのみのセルはスキップ *)
+    If[StringLength[text] < 30, Return[text]];
+    (* LaTeX コマンドで始まる行（見出し等）は中身だけ処理 *)
+    If[StringMatchQ[text, "\\\\section{*}" | "\\\\subsection{*}" |
+        "\\\\subsubsection{*}" | "\\\\title{*}" |
+        "\\\\chapter{*}"],
+      Return[text]];
+
+    model = If[StringQ[$ClaudeModel] && StringLength[$ClaudeModel] > 0,
+      $ClaudeModel, "claude-sonnet-4-20250514"];
+
+    prompt = $iDocLaTeXifyPrompt <>
+      If[StringLength[pdfContext] > 0,
+        "\n\n=== Reference context from attached PDF (use for accurate math notation) ===\n" <>
+        StringTake[pdfContext, Min[8000, StringLength[pdfContext]]] <>
+        "\n=== End reference context ===\n\n", ""] <>
+      text;
+
+    result = Quiet[Check[
+      LLMSynthesize[prompt,
+        LLMEvaluator -> <|"Model" -> model|>],
+      $Failed]];
+    If[StringQ[result] && StringLength[result] > 0 &&
+       !StringStartsQ[result, "Error"] &&
+       !StringStartsQ[result, "[ERROR]"] &&
+       StringLength[result] > StringLength[text] * 0.3,
+      result,
+      text]
+  ];
+
+(* ノートブックのアタッチメント PDF からテキストを抽出する *)
+iDocExtractPDFContext[nb_NotebookObject] :=
+  Module[{atts, pdfFiles, texts = {}},
+    atts = Quiet[NBAccess`NBHistoryGetAttachments[nb, "history"]];
+    If[!ListQ[atts] || Length[atts] === 0, Return[""]];
+    pdfFiles = Select[atts, StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
+    If[Length[pdfFiles] === 0, Return[""]];
+    Do[
+      Module[{txt},
+        If[FileExistsQ[f],
+          txt = Quiet[Check[Import[f, "Plaintext"], ""]];
+          If[StringQ[txt] && StringLength[txt] > 50,
+            AppendTo[texts, StringTake[txt, Min[4000, StringLength[txt]]]]]]],
+    {f, Take[pdfFiles, Min[3, Length[pdfFiles]]]}];
+    StringRiffle[texts, "\n---\n"]
+  ];
+
+(* ノートブックの現在のアタッチメントリストを取得する *)
+iDocGetCurrentAttachments[nb_NotebookObject] :=
+  Module[{atts},
+    atts = Quiet[NBAccess`NBHistoryGetAttachments[nb, "history"]];
+    If[ListQ[atts], atts, {}]
+  ];
+
+(* セルの refSources を取得する。
+   形式: {{"filepath.pdf", All}, {"other.pdf", {1, 3, 5}}, ...}
+   または旧形式（文字列リスト）も受け付ける *)
+iDocGetRefSources[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{raw},
+    raw = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagRefSources];
+    Which[
+      ListQ[raw] && Length[raw] > 0 && ListQ[First[raw]], raw,
+      ListQ[raw], {#, All} & /@ raw,  (* 旧形式: 文字列リスト → All ページ *)
+      True, {}]
+  ];
+
+(* セルに refSources を設定する *)
+iDocSetRefSources[nb_NotebookObject, cellIdx_Integer, sources_List] :=
+  NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagRefSources, sources];
+
+(* PDF ファイルから指定ページのテキストを抽出する。
+   pages = All → 全ページ（上限あり）、pages = {1, 3, 5} → 指定ページのみ *)
+iDocExtractPDFPages[filePath_String, pages_] :=
+  Module[{txt, nPages, selectedPages, result = ""},
+    If[!FileExistsQ[filePath], Return[""]];
+    If[pages === All,
+      txt = Quiet[Check[Import[filePath, "Plaintext"], ""]];
+      If[StringQ[txt], Return[StringTake[txt, Min[4000, StringLength[txt]]]]];
+      Return[""]];
+    (* ページ指定: Import で個別ページ抽出を試みる *)
+    nPages = Quiet[Check[Import[filePath, {"PageCount"}], 0]];
+    If[!IntegerQ[nPages] || nPages === 0,
+      (* PageCount 取得失敗: 全文フォールバック *)
+      txt = Quiet[Check[Import[filePath, "Plaintext"], ""]];
+      If[StringQ[txt], Return[StringTake[txt, Min[4000, StringLength[txt]]]]];
+      Return[""]];
+    selectedPages = Select[pages, IntegerQ[#] && 1 <= # <= nPages &];
+    If[Length[selectedPages] === 0, Return[""]];
+    Do[
+      Module[{pageTxt},
+        pageTxt = Quiet[Check[Import[filePath, {"Plaintext", p}], ""]];
+        If[StringQ[pageTxt] && StringLength[pageTxt] > 0,
+          result = result <> "[Page " <> ToString[p] <> "]\n" <> pageTxt <> "\n\n"]],
+    {p, selectedPages}];
+    StringTake[result, Min[4000, StringLength[result]]]
+  ];
+
+(* セル固有の PDF コンテキストを抽出する。
+   refSources が設定されていればそれを使い、なければ全アタッチメントにフォールバック。 *)
+iDocExtractCellPDFContext[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{refs, texts = {}, atts, pdfFiles},
+    refs = iDocGetRefSources[nb, cellIdx];
+    If[Length[refs] > 0,
+      (* refSources が設定済み: 指定ファイル・ページのみ抽出 *)
+      Do[
+        Module[{f = ref[[1]], pages = ref[[2]], txt},
+          txt = iDocExtractPDFPages[f, pages];
+          If[StringLength[txt] > 0,
+            AppendTo[texts, "[" <> FileNameTake[f] <> "]\n" <> txt]]],
+      {ref, refs}];
+      Return[StringRiffle[texts, "\n---\n"]]];
+    (* フォールバック: ノートブックの全アタッチメント *)
+    iDocExtractPDFContext[nb]
+  ];
+
+(* 依存資料編集ダイアログ *)
+DocEditRefSources[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{refs, atts, pdfAtts, dlgRefs, pdfNames},
+    refs = iDocGetRefSources[nb, cellIdx];
+    atts = iDocGetCurrentAttachments[nb];
+    pdfAtts = Select[atts, StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
+    pdfNames = FileNameTake /@ pdfAtts;
+    (* ダイアログ用: {ファイル名, ページ指定文字列, フルパス, 有効フラグ} *)
+    dlgRefs = Table[
+      Module[{existing, pageStr},
+        existing = Select[refs, #[[1]] === pdfAtts[[i]] &];
+        pageStr = If[Length[existing] > 0,
+          Module[{ps = existing[[1, 2]]},
+            If[ps === All, "All", StringRiffle[ToString /@ ps, ","]]],
+          ""];
+        {pdfNames[[i]], pageStr, pdfAtts[[i]], pageStr =!= ""}],
+    {i, Length[pdfAtts]}];
+    If[Length[dlgRefs] === 0,
+      MessageDialog[iL["アタッチされた PDF がありません。",
+        "No PDF attachments found."]];
+      Return[$Failed]];
+    DialogInput[
+      DynamicModule[{rows = dlgRefs},
+      Column[{
+        Style[iL["依存資料", "Reference Sources"], Bold, 12],
+        Style[iL["ページ: 数字をカンマ区切り (例: 1,3,5) または All",
+          "Pages: comma-separated numbers (e.g. 1,3,5) or All"], 8, GrayLevel[0.5]],
+        Spacer[3],
+        Dynamic[Column[
+          Table[
+            Row[{
+              Checkbox[Dynamic[rows[[i, 4]]]],
+              Style[" " <> rows[[i, 1]], 10],
+              Spacer[5],
+              InputField[Dynamic[rows[[i, 2]]], String, FieldSize -> 10]
+            }],
+          {i, Length[rows]}], Spacings -> 0.3]],
+        Spacer[5],
+        Row[{
+          DefaultButton[(
+            Module[{newRefs = {}},
+              Do[
+                If[rows[[j, 4]],
+                  Module[{pages, pageStr = StringTrim[rows[[j, 2]]]},
+                    pages = If[pageStr === "" || ToLowerCase[pageStr] === "all",
+                      All,
+                      Quiet[ToExpression["{" <> pageStr <> "}"]]];
+                    If[!ListQ[pages], pages = All];
+                    AppendTo[newRefs, {rows[[j, 3]], pages}]]],
+              {j, Length[rows]}];
+              iDocSetRefSources[nb, cellIdx, newRefs]];
+            DialogReturn[])],
+          CancelButton[DialogReturn[]]
+        }, Spacer[10]]
+      }, Alignment -> Left]],
+      WindowTitle -> iL["依存資料", "Reference Sources"],
+      WindowSize -> {320, Automatic}]
+  ];
+
+iDocEditRefSourcesAction[] :=
+  Module[{nb, cellIdx},
+    {nb, cellIdx} = iDocResolveTargetCell[];
+    If[cellIdx === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    DocEditRefSources[nb, cellIdx]
+  ];
+
+
+(* ============================================================
+   自動引用挿入 (Auto-Citation) — 非同期チェーン実行
+   
+   Phase 1: refSources から文献リスト構築 + LLM で書誌情報を正確化
+   Phase 2: 各セルのパラグラフに代表引用を1つ挿入
+   Phase 3: 未引用文献を関連パラグラフに配置 / 無関係なら取り消し
+   Phase 5: Bibliography セルを生成/更新
+   ============================================================ *)
+
+(* PDF ファイル名から引用キー・著者・年を推定する *)
+iDocParsePDFFileName[path_String] :=
+  Module[{name, parts, year = "", author = "", key},
+    name = FileBaseName[path];
+    Module[{yearMatch = StringCases[name, RegularExpression["(\\d{4})"] -> "$1"]},
+      If[Length[yearMatch] > 0, year = First[yearMatch]]];
+    parts = StringSplit[name, {"-", "_", "."}];
+    Do[If[!StringMatchQ[p, NumberString] && StringLength[p] > 1,
+      author = p; Break[]], {p, parts}];
+    If[author === "" && Length[parts] > 0, author = First[parts]];
+    key = ToLowerCase[author] <> year;
+    {key, author, year}
+  ];
+
+(* 初期文献データベースを refSources から構築する *)
+iDocBuildBibFromRefSources[nb_NotebookObject] :=
+  Module[{nCells, refs, bib = <||>, seen = <||>},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      refs = iDocGetRefSources[nb, i];
+      Do[Module[{f = ref[[1]], parsed, key, author, year},
+        If[!KeyExistsQ[seen, f],
+          seen[f] = True;
+          parsed = iDocParsePDFFileName[f];
+          {key, author, year} = parsed;
+          If[KeyExistsQ[bib, key],
+            key = key <> "-" <> ToString[Length[bib] + 1]];
+          bib[key] = <|"Author" -> author, "Year" -> year,
+            "Title" -> FileBaseName[f], "FilePath" -> f,
+            "CiteKey" -> key, "Enriched" -> False, "AutoInserted" -> False,
+            "Unrelated" -> False|>]],
+      {ref, refs}],
+    {i, nCells}];
+    bib
+  ];
+
+(* セルの refSources から引用キーリストを取得する *)
+iDocCellCiteKeys[nb_NotebookObject, cellIdx_Integer, bibDB_Association] :=
+  Module[{refs, keys = {}},
+    refs = iDocGetRefSources[nb, cellIdx];
+    Do[Module[{f = ref[[1]]},
+      Do[If[bibDB[k]["FilePath"] === f,
+        AppendTo[keys, k]; Break[]], {k, Keys[bibDB]}]],
+    {ref, refs}];
+    keys
+  ];
+
+(* Phase 1: LLM で書誌情報を正確化 *)
+iDocEnrichBibPrompt[pdfText_String, fileName_String] :=
+  "You are a bibliographic reference expert. " <>
+  "Extract the EXACT bibliographic information for the paper from the text below.
+" <>
+  "If the text is insufficient, use your knowledge to identify the paper from the filename.
+
+" <>
+  "Filename: " <> fileName <> "
+
+" <>
+  "CRITICAL: Output ONLY in this exact format, one field per line:
+" <>
+  "Author: <full author names>
+Year: <year>
+Title: <exact title>
+" <>
+  "Journal: <journal or Book/Thesis/Preprint>
+" <>
+  "Volume: <volume or empty>
+Pages: <pages or empty>
+
+" <>
+  "Paper text (first pages):
+" <>
+  StringTake[pdfText, Min[3000, StringLength[pdfText]]];
+
+iDocParseEnrichResponse[response_String] :=
+  Module[{lines, result = <||>},
+    lines = StringSplit[response, "
+"];
+    Do[Which[
+      StringStartsQ[line, "Author:"],
+        result["Author"] = StringTrim[StringDrop[line, 7]],
+      StringStartsQ[line, "Year:"],
+        result["Year"] = StringTrim[StringDrop[line, 5]],
+      StringStartsQ[line, "Title:"],
+        result["Title"] = StringTrim[StringDrop[line, 6]],
+      StringStartsQ[line, "Journal:"],
+        result["Journal"] = StringTrim[StringDrop[line, 8]],
+      StringStartsQ[line, "Volume:"],
+        result["Volume"] = StringTrim[StringDrop[line, 7]],
+      StringStartsQ[line, "Pages:"],
+        result["Pages"] = StringTrim[StringDrop[line, 6]]],
+    {line, lines}];
+    result
+  ];
+
+iDocEnrichBibChain[nb_, bibDB_, keys_, pos_, completionFn_, fb_] :=
+  If[pos > Length[keys],
+    completionFn[bibDB],
+    Module[{key = keys[[pos]], entry, pdfText, prompt},
+      entry = bibDB[key];
+      If[TrueQ[entry["Enriched"]],
+        iDocEnrichBibChain[nb, bibDB, keys, pos + 1, completionFn, fb],
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["文献情報を取得中: ", "Enriching bibliography: "] <>
+            ToString[pos] <> "/" <> ToString[Length[keys]]];
+        pdfText = If[StringQ[entry["FilePath"]] && FileExistsQ[entry["FilePath"]],
+          Quiet[Check[Import[entry["FilePath"], "Plaintext"], ""]], ""];
+        prompt = iDocEnrichBibPrompt[
+          If[StringQ[pdfText], pdfText, ""], FileNameTake[entry["FilePath"]]];
+        NBAccess`$NBLLMQueryFunc[prompt,
+          Function[response,
+            Module[{parsed, updatedDB = bibDB},
+              If[StringQ[response] && StringContainsQ[response, "Author:"],
+                parsed = iDocParseEnrichResponse[response];
+                If[KeyExistsQ[parsed, "Author"],
+                  updatedDB[key] = Join[updatedDB[key], parsed,
+                    <|"Enriched" -> True|>]]];
+              iDocEnrichBibChain[nb, updatedDB, keys, pos + 1, completionFn, fb]]],
+          nb, Fallback -> fb]]]
+  ];
+
+(* Phase 2: 各セルに代表引用を1つ挿入 *)
+iDocInsertCitePrompt[text_String, citeKey_String, bibEntry_Association] :=
+  "Insert a single citation marker into the following paragraph.
+
+" <>
+  "Reference: " <> citeKey <> " = " <>
+    bibEntry["Author"] <> " (" <> bibEntry["Year"] <> "). " <>
+    Lookup[bibEntry, "Title", ""] <> "
+
+" <>
+  "Rules:
+" <>
+  "- Insert exactly ONE <<cite:" <> citeKey <> ">> at the MOST appropriate position
+" <>
+  "- Best: after mentioning the author/work, or after a claim from this reference
+" <>
+  "- If author with year appears (e.g. Morita (1996)), convert to Morita <<cite:" <> citeKey <> ">>
+" <>
+  "- Do NOT change any text content
+" <>
+  "- If already contains <<cite:" <> citeKey <> ">>, output unchanged
+" <>
+  "- CRITICAL: Output ONLY the text with the citation inserted
+
+" <>
+  "Text:
+" <> text;
+
+iDocCiteCellChain[nb_, bibDB_, cellIdxs_, pos_, completionFn_, fb_] :=
+  If[pos > Length[cellIdxs],
+    completionFn[],
+    Module[{cellIdx = cellIdxs[[pos]], mode, text, citeKeys, key, entry, prompt},
+      NBAccess`NBInvalidateCellsCache[nb];
+      mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+      If[mode === "idea" || iDocIsMetaCell[nb, cellIdx],
+        iDocCiteCellChain[nb, bibDB, cellIdxs, pos + 1, completionFn, fb];
+        Return[]];
+      citeKeys = iDocCellCiteKeys[nb, cellIdx, bibDB];
+      text = NBAccess`NBCellGetText[nb, cellIdx];
+      If[Length[citeKeys] === 0 || !StringQ[text] || StringLength[text] < 20,
+        iDocCiteCellChain[nb, bibDB, cellIdxs, pos + 1, completionFn, fb];
+        Return[]];
+      key = First[citeKeys];
+      If[StringContainsQ[text, "<<cite:" <> key <> ">>"],
+        iDocCiteCellChain[nb, bibDB, cellIdxs, pos + 1, completionFn, fb];
+        Return[]];
+      entry = bibDB[key];
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["引用挿入中: ", "Inserting citations: "] <>
+          ToString[pos] <> "/" <> ToString[Length[cellIdxs]]];
+      prompt = iDocInsertCitePrompt[text, key, entry];
+      With[{nb2 = nb, ci = cellIdx, db = bibDB, idxs = cellIdxs,
+            p = pos, cfn = completionFn, f = fb},
+        NBAccess`$NBLLMQueryFunc[prompt,
+          Function[response,
+            If[StringQ[response] && StringLength[response] > StringLength[text] * 0.3 &&
+               StringContainsQ[response, "<<cite:"],
+              NBAccess`NBInvalidateCellsCache[nb2];
+              NBAccess`NBCellWriteText[nb2, ci, StringTrim[response]];
+              NBAccess`NBCellSetTaggingRule[nb2, ci,
+                $iDocTagCleanText, StringTrim[response]]];
+            iDocCiteCellChain[nb2, db, idxs, p + 1, cfn, f]],
+          nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
+          Fallback -> fb]]]
+  ];
+
+(* Phase 3: 未引用文献の処理 *)
+iDocFindUncitedKeys[nb_NotebookObject, bibDB_Association] :=
+  Module[{nCells, allText = "", cited = {}},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[If[!iDocIsMetaCell[nb, i],
+      Module[{t = NBAccess`NBCellGetText[nb, i]},
+        If[StringQ[t], allText = allText <> t]]],
+    {i, nCells}];
+    Do[If[StringContainsQ[allText, "<<cite:" <> k <> ">>"],
+      AppendTo[cited, k]], {k, Keys[bibDB]}];
+    Complement[Keys[bibDB], cited]
+  ];
+
+iDocPlaceUncitedPrompt[uncitedKey_String, bibEntry_Association,
+    paragraphs_List] :=
+  "You have an uncited reference that needs to be placed in the document.
+
+" <>
+  "Reference: " <> uncitedKey <> " = " <>
+    bibEntry["Author"] <> " (" <> bibEntry["Year"] <> "). " <>
+    Lookup[bibEntry, "Title", ""] <> "
+
+" <>
+  "Paragraphs (numbered):
+" <>
+    StringRiffle[MapIndexed[
+      "[" <> ToString[First[#2]] <> "] " <>
+        StringTake[#1, Min[200, StringLength[#1]]] <> "..." &,
+      paragraphs], "
+"] <> "
+
+" <>
+  "Rules:
+" <>
+  "- If this reference is related to any paragraph, output: PLACE <number>
+" <>
+  "- If clearly unrelated to ALL paragraphs, output: UNRELATED
+" <>
+  "- Output ONLY one of these two formats";
+
+iDocPlaceUncitedChain[nb_, bibDB_, uncitedKeys_, pos_, completionFn_, fb_,
+    paragraphs_, paraIdxs_] :=
+  If[pos > Length[uncitedKeys],
+    completionFn[bibDB],
+    Module[{key = uncitedKeys[[pos]], entry, prompt},
+      entry = bibDB[key];
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["未引用文献を配置中: ", "Placing uncited: "] <>
+          ToString[pos] <> "/" <> ToString[Length[uncitedKeys]]];
+      prompt = iDocPlaceUncitedPrompt[key, entry, paragraphs];
+      With[{nb2 = nb, db = bibDB, uks = uncitedKeys, p = pos,
+            cfn = completionFn, f = fb, pIdxs = paraIdxs, k = key,
+            paras = paragraphs},
+        NBAccess`$NBLLMQueryFunc[prompt,
+          Function[response,
+            Module[{updatedDB = db, placeNum, targetIdx, targetText},
+              If[StringQ[response],
+                Which[
+                  StringStartsQ[StringTrim[response], "UNRELATED"],
+                    updatedDB[k] = Join[updatedDB[k], <|"Unrelated" -> True|>],
+                  StringStartsQ[StringTrim[response], "PLACE"],
+                    placeNum = Quiet[ToExpression[
+                      StringTrim[StringReplace[response, "PLACE" -> ""]]]];
+                    If[IntegerQ[placeNum] && 1 <= placeNum <= Length[pIdxs],
+                      targetIdx = pIdxs[[placeNum]];
+                      NBAccess`NBInvalidateCellsCache[nb2];
+                      targetText = NBAccess`NBCellGetText[nb2, targetIdx];
+                      If[StringQ[targetText] &&
+                         !StringContainsQ[targetText, "<<cite:" <> k <> ">>"],
+                        Module[{newText = targetText <> " <<cite:" <> k <> ">>"},
+                          NBAccess`NBCellWriteText[nb2, targetIdx, newText];
+                          NBAccess`NBCellSetTaggingRule[nb2, targetIdx,
+                            $iDocTagCleanText, newText]]]]
+                ]];
+              iDocPlaceUncitedChain[nb2, updatedDB, uks, p + 1, cfn, f,
+                paras, pIdxs]]],
+          nb, Fallback -> fb]]]
+  ];
+
+(* Phase 5: Bibliography セル生成/更新 *)
+iDocGenerateBibCell[nb_NotebookObject, bibDB_Association] :=
+  Module[{existingBib, mergedBib, nCells, bibCellIdx = 0, bibText, bibCell,
+          normalEntries, unrelatedEntries},
+    existingBib = iDocCollectBibliography[nb];
+    mergedBib = existingBib;
+    Do[If[!KeyExistsQ[mergedBib, key], mergedBib[key] = bibDB[key]],
+      {key, Keys[bibDB]}];
+    If[Length[mergedBib] === 0, Return[]];
+    NBAccess`NBInvalidateCellsCache[nb];
+    nCells = NBAccess`NBCellCount[nb];
+    Do[If[NBAccess`NBCellStyle[nb, i] === "Bibliography",
+      bibCellIdx = i; Break[]], {i, nCells}];
+    normalEntries = Select[Keys[mergedBib],
+      !TrueQ[Lookup[mergedBib[#], "Unrelated", False]] &];
+    unrelatedEntries = Select[Keys[mergedBib],
+      TrueQ[Lookup[mergedBib[#], "Unrelated", False]] &];
+    bibText = "{" <> StringRiffle[
+      Prepend[
+        Join[
+          (Module[{e = mergedBib[#]},
+            "{\"" <> # <> "\", \"" <> Lookup[e, "Author", "?"] <>
+            "\", \"" <> Lookup[e, "Year", "?"] <> "\", \"" <>
+            Lookup[e, "Title", "?"] <>
+            If[StringQ[Lookup[e, "Journal", ""]] &&
+               StringLength[Lookup[e, "Journal", ""]] > 0,
+              ", " <> e["Journal"] <>
+              If[StringQ[Lookup[e, "Volume", ""]] &&
+                 StringLength[e["Volume"]] > 0, " " <> e["Volume"], ""] <>
+              If[StringQ[Lookup[e, "Pages", ""]] &&
+                 StringLength[e["Pages"]] > 0, ", pp. " <> e["Pages"], ""],
+              ""] <> "\"}"] & /@ normalEntries),
+          (Module[{e = mergedBib[#]},
+            "{\"" <> # <> "\", \"" <> Lookup[e, "Author", "?"] <>
+            "\", \"" <> Lookup[e, "Year", "?"] <>
+            "\", \"UNRELATED: " <> Lookup[e, "Title", "?"] <>
+            "\"}"] & /@ unrelatedEntries)],
+        "{<<Key>>, <<Author>>, <<Year>>, <<Title>>}"],
+      ", "] <> "}";
+    If[bibCellIdx > 0,
+      NBAccess`NBInvalidateCellsCache[nb];
+      NBAccess`NBCellWriteText[nb, bibCellIdx, bibText],
+      bibCell = Cell[bibText, "Bibliography",
+        Sequence @@ $iDocBibliographyCellOpts];
+      SelectionMove[nb, After, Notebook];
+      NotebookWrite[nb, bibCell]];
+  ];
+
+(* メインオーケストレータ *)
+DocAutoInsertCitations[nb_NotebookObject] :=
+  Module[{bibDB, nCells, cellsWithRefs = {}, paragraphs = {}, paraIdxs = {},
+          fb},
+    NBAccess`NBInvalidateCellsCache[nb];
+    bibDB = iDocBuildBibFromRefSources[nb];
+    If[Length[bibDB] === 0,
+      MessageDialog[iL["依存資料が設定されたセルがありません。
+" <>
+        "「依存資料」ボタンでセルに資料を関連付けてください。",
+        "No cells have reference sources set.
+" <>
+        "Use Ref Src button to associate sources with cells."]];
+      Return[$Failed]];
+    fb = ClaudeCode`GetPaletteFallback[];
+    nCells = NBAccess`NBCellCount[nb];
+    Do[If[!iDocIsMetaCell[nb, i],
+      Module[{mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode],
+              text = NBAccess`NBCellGetText[nb, i]},
+        If[Length[iDocGetRefSources[nb, i]] > 0 && mode =!= "idea",
+          AppendTo[cellsWithRefs, i]];
+        If[StringQ[text] && StringLength[text] > 30 && mode =!= "idea",
+          AppendTo[paragraphs, text]; AppendTo[paraIdxs, i]]]],
+    {i, nCells}];
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["自動引用: 書誌情報を取得中...", "Auto-cite: enriching bibliography..."]];
+    iDocEnrichBibChain[nb, bibDB, Keys[bibDB], 1,
+      Function[enrichedDB,
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["自動引用: 引用を挿入中...", "Auto-cite: inserting citations..."]];
+        iDocCiteCellChain[nb, enrichedDB, cellsWithRefs, 1,
+          Function[],  fb];
+        RunScheduledTask[
+          Module[{uncited},
+            NBAccess`NBInvalidateCellsCache[nb];
+            uncited = iDocFindUncitedKeys[nb, enrichedDB];
+            If[Length[uncited] > 0,
+              Quiet[CurrentValue[nb, WindowStatusArea] =
+                iL["自動引用: 未引用文献を配置中...",
+                   "Auto-cite: placing uncited refs..."]];
+              iDocPlaceUncitedChain[nb, enrichedDB, uncited, 1,
+                Function[finalDB,
+                  iDocGenerateBibCell[nb, finalDB];
+                  Quiet[CurrentValue[nb, WindowStatusArea] =
+                    iL["自動引用完了", "Auto-cite done"]];
+                  RunScheduledTask[With[{pNb = nb},
+                    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}]],
+                fb, paragraphs, paraIdxs],
+              iDocGenerateBibCell[nb, enrichedDB];
+              Quiet[CurrentValue[nb, WindowStatusArea] =
+                iL["自動引用完了", "Auto-cite done"]];
+              RunScheduledTask[With[{pNb = nb},
+                Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}]]],
+          {3}]],
+      fb]
+  ];
+
+iDocAutoInsertCitationsAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocAutoInsertCitations[nb]
+  ];
+
+DocExportLaTeX[nb_NotebookObject, opts:OptionsPattern[]] :=
   Module[{outDir, nCells, lines = {}, imgCounter = 1,
-          result, line, outFile, baseName, header, footer},
+          result, line, outFile, baseName, header, footer,
+          figTable, bibTable, bibLines, styleRemap, mathFmt, mathCount = 0,
+          exportLang},
+    mathFmt = TrueQ[OptionValue["MathFormat"]];
     outDir = iDocEnsureExportDir[nb, "LaTeX"];
     If[outDir === $Failed,
       MessageDialog[iL[
@@ -1738,16 +3871,64 @@ DocExportLaTeX[nb_NotebookObject] :=
     NBAccess`NBInvalidateCellsCache[nb];
     nCells = NBAccess`NBCellCount[nb];
 
+    (* エクスポート言語を検出 *)
+    exportLang = iDocDetectExportLanguage[nb];
+
+    (* 図テーブル・参考文献・スタイル読み替えを構築 *)
+    figTable = iDocBuildFigureTable[nb];
+    bibTable = iDocCollectBibliography[nb];
+    styleRemap = iDocParseStyleRemap[nb];
+
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["LaTeX エクスポート中...", "Exporting LaTeX..."]];
 
     Do[
       Quiet[CurrentValue[nb, WindowStatusArea] =
-        iL["エクスポート中: ", "Exporting: "] <> ToString[i] <> "/" <> ToString[nCells]];
-      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "latex"];
+        If[mathFmt,
+          iL["エクスポート中 (数式最適化): ", "Exporting (math): "] <>
+            ToString[i] <> "/" <> ToString[nCells],
+          iL["エクスポート中: ", "Exporting: "] <>
+            ToString[i] <> "/" <> ToString[nCells]]];
+      {line, imgCounter} = iDocCellToExport[nb, i, outDir, imgCounter, "latex",
+        figTable, bibTable, styleRemap, exportLang];
       If[line =!= Null && StringQ[line] && StringTrim[line] =!= "",
+        (* 数式最適化: テキスト行のみ対象（コードブロック・figure環境は除外） *)
+        If[mathFmt &&
+           !StringStartsQ[line, "\\begin{lstlisting}"] &&
+           !StringStartsQ[line, "\\begin{verbatim}"] &&
+           !StringStartsQ[line, "\\begin{figure}"] &&
+           !StringStartsQ[line, "\\["] &&
+           StringLength[line] > 20,
+          line = iDocLaTeXifyMath[line,
+            iDocExtractCellPDFContext[nb, i]];
+          mathCount++];
         AppendTo[lines, line]],
     {i, nCells}];
+
+    If[mathFmt && mathCount > 0,
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL[ToString[mathCount] <> " セルの数式を最適化しました。",
+           ToString[mathCount] <> " cells math-formatted."]]];
+
+    (* 参考文献セクションの出力: Bibliography セル + refSources を統合 *)
+    Module[{bibFromRefs, mergedBib = bibTable},
+      bibFromRefs = iDocBuildBibFromRefSources[nb];
+      Do[If[!KeyExistsQ[mergedBib, key], mergedBib[key] = bibFromRefs[key]],
+        {key, Keys[bibFromRefs]}];
+      (* 翻訳モードなら日本語タイトルを翻訳 *)
+      If[exportLang =!= "source",
+        Do[mergedBib[key] = iDocTranslateBibTitle[mergedBib[key], exportLang],
+          {key, Keys[mergedBib]}]];
+      If[Length[mergedBib] > 0,
+        bibLines = {"\\begin{thebibliography}{99}"};
+        Do[
+          AppendTo[bibLines,
+            "\\bibitem{" <> key <> "} " <>
+            mergedBib[key]["Author"] <> " (" <> mergedBib[key]["Year"] <> "). " <>
+            mergedBib[key]["Title"] <> "."],
+        {key, Keys[mergedBib]}];
+        AppendTo[bibLines, "\\end{thebibliography}"];
+        AppendTo[lines, StringRiffle[bibLines, "\n"]]]];
 
     (* LaTeX ヘッダー・フッター *)
     header = "\\documentclass[a4paper,11pt]{article}\n" <>
@@ -1780,6 +3961,69 @@ DocExportLaTeX[nb_NotebookObject] :=
     outFile
   ];
 
+(* Word (.docx) エクスポート: Markdown → Pandoc → .docx *)
+Options[DocExportWord] = {"ReferenceDoc" -> None, "MathFormat" -> False};
+
+DocExportWord[nb_NotebookObject, opts:OptionsPattern[]] :=
+  Module[{mdFile, outDir, baseName, docxFile, refDoc, pandocArgs, result,
+          mathFmt},
+    mathFmt = TrueQ[OptionValue["MathFormat"]];
+    (* まず Markdown エクスポートを実行（数式オプションを伝搬） *)
+    mdFile = DocExportMarkdown[nb, "MathFormat" -> mathFmt];
+    If[!StringQ[mdFile] || !FileExistsQ[mdFile],
+      MessageDialog[iL[
+        "Markdown エクスポートに失敗しました。",
+        "Markdown export failed."]];
+      Return[$Failed]];
+
+    outDir = DirectoryName[mdFile];
+    baseName = FileBaseName[mdFile];
+    docxFile = FileNameJoin[{outDir, baseName <> ".docx"}];
+    refDoc = OptionValue["ReferenceDoc"];
+
+    (* Pandoc の存在確認 *)
+    result = Quiet[RunProcess[{"pandoc", "--version"}, "ExitCode"]];
+    If[result =!= 0,
+      MessageDialog[iL[
+        "Pandoc が見つかりません。\n" <>
+        "インストール: https://pandoc.org/installing.html\n" <>
+        "macOS: brew install pandoc\n" <>
+        "Windows: choco install pandoc",
+        "Pandoc not found.\n" <>
+        "Install: https://pandoc.org/installing.html\n" <>
+        "macOS: brew install pandoc\n" <>
+        "Windows: choco install pandoc"]];
+      Return[$Failed]];
+
+    (* Pandoc コマンド構築: 作業ディレクトリを画像フォルダに設定 *)
+    pandocArgs = {
+      "pandoc",
+      FileNameTake[mdFile],  (* 相対パスで指定 *)
+      "-o", FileNameTake[docxFile],
+      "--from=markdown+implicit_figures"
+    };
+    If[StringQ[refDoc] && FileExistsQ[refDoc],
+      AppendTo[pandocArgs, "--reference-doc=" <> refDoc]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["Word 変換中...", "Converting to Word..."]];
+
+    result = RunProcess[pandocArgs, ProcessDirectory -> outDir];
+    If[result["ExitCode"] === 0 && FileExistsQ[docxFile],
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["Word エクスポート完了: " <> docxFile,
+           "Word export complete: " <> docxFile]];
+      RunScheduledTask[With[{pNb = nb},
+        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
+      docxFile,
+      (* エラー *)
+      MessageDialog[iL[
+        "Pandoc 変換エラー:\n" <> result["StandardError"],
+        "Pandoc conversion error:\n" <> result["StandardError"]]];
+      Quiet[CurrentValue[nb, WindowStatusArea] = ""];
+      $Failed]
+  ];
+
 (* パレットからのエクスポートアクション *)
 iDocExportMarkdownAction[] :=
   Module[{nb = iDocUserNotebook[]},
@@ -1797,12 +4041,52 @@ iDocExportLaTeXAction[] :=
     DocExportLaTeX[nb]
   ];
 
+iDocExportLaTeXMathAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocExportLaTeX[nb, "MathFormat" -> True]
+  ];
+
+iDocExportWordAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocExportWord[nb]
+  ];
+
+iDocExportWordMathAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocExportWord[nb, "MathFormat" -> True]
+  ];
+
 iDocInsertNoteAction[] :=
   Module[{nb = iDocUserNotebook[]},
     If[Head[nb] =!= NotebookObject,
       MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
       Return[$Failed]];
     DocInsertNote[nb]
+  ];
+
+iDocInsertDictionaryAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocInsertDictionary[nb]
+  ];
+
+iDocInsertDirectiveAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject,
+      MessageDialog[iL["ノートブックが見つかりません。", "No notebook found."]];
+      Return[$Failed]];
+    DocInsertDirective[nb]
   ];
 
 (* ============================================================
@@ -1834,31 +4118,50 @@ ShowDocPalette[] := (
 
       (* -- 執筆ツール -- *)
       Style[iL[" 執筆ツール", " Writing Tools"], Bold, 8, GrayLevel[0.3]],
-      iDocButton[iL["\[FilledRightTriangle] 展開", "\[FilledRightTriangle] Expand"],
-        RGBColor[0.2, 0.55, 0.35],
-        iDocExpandSelected[]],
-      iDocButton[iL["\[RightGuillemet] 翻訳", "\[RightGuillemet] Translate"],
-        RGBColor[0.3, 0.4, 0.65],
-        iDocTranslateSelected[]],
-      iDocButton[iL["\[Equilibrium] 同期", "\[Equilibrium] Sync"],
-        RGBColor[0.45, 0.35, 0.6],
-        iDocSyncSelected[]],
-      Spacer[1],
+      iDocButtonRow[
+        iDocButton2[iL["展開", "Expand"],
+          RGBColor[0.2, 0.55, 0.35], iDocExpandSelected[]],
+        iDocButton2[iL["翻訳", "Translate"],
+          RGBColor[0.3, 0.4, 0.65], iDocTranslateSelected[]]],
+      iDocButtonRow[
+        iDocButton2[iL["分割", "Split"],
+          RGBColor[0.5, 0.45, 0.35], iDocSplitCell[]],
+        iDocButton2[iL["合併", "Merge"],
+          RGBColor[0.4, 0.5, 0.35], iDocMergeCells[]]],
+      Spacer[3],
       iDocButton[iL["\[LeftRightArrow] 切替", "\[LeftRightArrow] Toggle"],
         RGBColor[0.35, 0.45, 0.65],
         iDocToggleSelected[]],
-      Spacer[1],
+      Spacer[3],
       iDocButton[iL["\[Times] 展開削除", "\[Times] Del Expand"],
         RGBColor[0.6, 0.35, 0.35],
         iDocDeleteExpandSelected[]],
       iDocButton[iL["\[Times] 翻訳削除", "\[Times] Del Translate"],
         RGBColor[0.6, 0.35, 0.35],
         iDocDeleteTranslateSelected[]],
+      iDocButtonRow[
+        iDocButton2[iL["メモ", "Note"],
+          RGBColor[0.7, 0.63, 0.35], iDocInsertNoteAction[]],
+        iDocButton2[iL["指示", "Directive"],
+          RGBColor[0.65, 0.35, 0.5], iDocInsertDirectiveAction[]]],
+      iDocButtonRow[
+        iDocButton2[iL["辞書", "Dict"],
+          RGBColor[0.35, 0.65, 0.65], iDocInsertDictionaryAction[]],
+        iDocButton2[iL["文献", "Bib"],
+          RGBColor[0.4, 0.45, 0.6], iDocInsertBibliographyAction[]]],
+      iDocButton[iL["\[FilledSmallSquare] 図メタ", "\[FilledSmallSquare] Fig Meta"],
+        RGBColor[0.5, 0.5, 0.4],
+        iDocEditFigureMetaAction[]],
+      iDocButton[iL["\[RightPointer] 参照挿入", "\[RightPointer] Ref Insert"],
+        RGBColor[0.45, 0.45, 0.55],
+        iDocInsertReferenceAction[]],
+      iDocButton[iL["\[FilledSmallSquare] 依存資料", "\[FilledSmallSquare] Ref Src"],
+        RGBColor[0.45, 0.4, 0.5],
+        iDocEditRefSourcesAction[]],
+      iDocButton[iL["\[RightPointer] 自動引用", "\[RightPointer] Auto Cite"],
+        RGBColor[0.4, 0.4, 0.6],
+        iDocAutoInsertCitationsAction[]],
       Spacer[1],
-      iDocButton[iL["\[FilledSmallSquare] メモ", "\[FilledSmallSquare] Note"],
-        RGBColor[0.7, 0.63, 0.35],
-        iDocInsertNoteAction[]],
-      Spacer[2],
 
       (* -- 一括表示切替 -- *)
       Style[iL[" 一括表示", " View All"], Bold, 8, GrayLevel[0.3]],
@@ -1870,18 +4173,28 @@ ShowDocPalette[] := (
         iDocShowAllAs["paragraph"]],
       iDocButton[iL["\[CapitalAHat] 全翻訳", "\[CapitalAHat] All Translations"],
         RGBColor[0.3, 0.4, 0.65],
-        iDocShowAllAs["translation"]],
-      Spacer[2],
+        iDocTranslateAllAndShow[]],
+      Spacer[1],
 
       (* -- エクスポート -- *)
       Style[iL[" エクスポート", " Export"], Bold, 8, GrayLevel[0.3]],
       iDocButton[iL["\[RightArrowBar] Markdown", "\[RightArrowBar] Markdown"],
         RGBColor[0.3, 0.5, 0.55],
         iDocExportMarkdownAction[]],
-      iDocButton[iL["\[RightArrowBar] LaTeX", "\[RightArrowBar] LaTeX"],
-        RGBColor[0.4, 0.4, 0.55],
-        iDocExportLaTeXAction[]],
-      Spacer[2],
+      iDocButtonRow[
+        iDocButton2[iL["LaTeX", "LaTeX"],
+          RGBColor[0.4, 0.4, 0.55], iDocExportLaTeXAction[]],
+        iDocButton2[iL["+Math", "+Math"],
+          RGBColor[0.45, 0.35, 0.55], iDocExportLaTeXMathAction[]]],
+      iDocButtonRow[
+        iDocButton2[iL["Word", "Word"],
+          RGBColor[0.3, 0.45, 0.6], iDocExportWordAction[]],
+        iDocButton2[iL["+Math", "+Math"],
+          RGBColor[0.35, 0.35, 0.6], iDocExportWordMathAction[]]],
+      iDocButton[iL["\[Times] 除外切替", "\[Times] Excl Toggle"],
+        RGBColor[0.6, 0.35, 0.35],
+        iDocToggleExportExclude[]],
+      Spacer[1],
 
       (* -- 設定 (ClaudeCode パレットと共有: 公開アクセサ経由) -- *)
       Style[iL[" 設定", " Settings"], Bold, 8, GrayLevel[0.3]],
@@ -1921,7 +4234,7 @@ ShowDocPalette[] := (
           (ClaudeCode`SetPaletteFallback[!ClaudeCode`GetPaletteFallback[]];
            ClaudeCode`SavePaletteSettings[InputNotebook[]]),
           Appearance -> "Frameless"]],
-      Spacer[2],
+      Spacer[1],
 
       (* -- ステータス -- *)
       Dynamic[
