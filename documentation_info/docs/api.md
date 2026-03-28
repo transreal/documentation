@@ -1,77 +1,92 @@
-# Documentation` API Reference
+# Documentation` API リファレンス
 
-Package: `Documentation``
-Context: `Documentation``
-Dependencies: [NBAccess](https://github.com/transreal/NBAccess), [claudecode](https://github.com/transreal/claudecode)
+パッケージ: `Documentation`
+依存: `NBAccess``, `ClaudeCode``
+用途: アウトラインプロセッサ拡張。アイデア → パラグラフ展開、翻訳、同期、Markdown/LaTeX エクスポート。
 
-Load: `Block[{$CharacterEncoding = "UTF-8"}, Get["documentation.wl"]]`
-
-## Public Functions
+## 公開関数
 
 ### DocExpandIdea[nb, cellIdx, opts]
-Expands the idea text in the specified cell into a paragraph using LLM. The original idea is saved in TaggingRules. If already in paragraph mode, expansion is blocked. If in idea mode with a saved paragraph, re-expands using the modified idea plus previous paragraph as context.
-→ Null (async) or $Failed
-Options: Fallback -> False (use fallback LLM if True)
-例: DocExpandIdea[EvaluationNotebook[], 3, Fallback -> True]
+指定セルのアイデアテキストを LLM でパラグラフに展開する。
+元アイデアは TaggingRules に保存。パラグラフ表示中は展開不可。
+→ Null（非同期実行）または $Failed
+Options: Fallback -> False (True でフォールバックモデル使用)
 
-### DocToggleView[nb, cellIdx] → String | Null | $Failed
-Toggles cell display between idea, paragraph, and translation. Saves current content (even if edited) before switching. Cycle: idea → paragraph → translation (if available) → idea.
-例: DocToggleView[EvaluationNotebook[], 5]
+例: `DocExpandIdea[EvaluationNotebook[], 3, Fallback -> True]`
+
+### DocToggleView[nb, cellIdx] → Null | String | $Failed
+セルのアイデア ↔ パラグラフ ↔ 翻訳の表示を循環切替する。
+現在表示中の内容（編集済みでも）を保存してから切り替える。
+Note セルは対象外。
 
 ### DocInsertNote[nb] → Null
-Inserts a Note-style cell at the current cursor position. Uses the notebook's existing "Note" style if defined; otherwise applies built-in visual options (yellow background, small font, indented).
+カーソル位置に Note スタイルのセルを挿入する。
+ノートブックに "Note" スタイル定義があればそれを使い、なければカスタム定義（薄黄背景、左枠線）で挿入する。
 
-### DocExportMarkdown[nb] → Null
-Exports the notebook as Markdown to `NotebookDirectory[]/<name>_md/`. Note cells are excluded. Raster images → PNG, vector/computed results → PDF. Input cells → fenced code blocks, formulas → TeX.
+### DocExportMarkdown[nb] → String | $Failed
+ノートブックを Markdown 形式でエクスポートする。
+出力先: `NotebookDirectory[] / <ノートブック名>_md/`
+Note セルは除外。ラスター画像 → PNG、ベクター/計算結果 → PDF。Input セル → コードブロック、数式 → TeX。
 
-### DocExportLaTeX[nb] → Null
-Exports the notebook as LaTeX to `NotebookDirectory[]/<name>_LaTeX/`. Note cells are excluded. Raster images → PNG, vector/computed results → PDF. Input cells → lstlisting, formulas → TeX.
+### DocExportLaTeX[nb] → String | $Failed
+ノートブックを LaTeX 形式でエクスポートする。
+出力先: `NotebookDirectory[] / <ノートブック名>_LaTeX/`
+Note セルは除外。画像・数式処理は DocExportMarkdown と同様。
 
 ### ShowDocPalette[] → Null
-Opens the documentation authoring palette. Closes any previously opened palette instance. Automatically loads palette settings from the current notebook on open and on notebook switch.
+ドキュメント作成用パレットを表示する。
+展開・翻訳・同期・切替・削除・メモ挿入・一括表示切替・エクスポートボタンを含む。
+既存パレットがあれば閉じてから再表示する。
 
-## Variables
+## 変数
 
 ### $DocTranslationLanguage
-型: String, 初期値: "English" (if $Language ≠ "English") or "Japanese" (if $Language === "English")
-Translation target language. Set to any language name to override the default. Used by translate and sync operations.
-例: $DocTranslationLanguage = "French"
+型: String, 初期値: `$Language` が英語以外なら `"English"`、英語なら `"Japanese"`
+翻訳先言語名。任意の言語名に変更可能。
+例: `$DocTranslationLanguage = "French"`
 
-## Palette Buttons (invoked via ShowDocPalette[])
+## セルモードと TaggingRules 構造
 
-The palette provides these actions on the selected cell(s):
-- **Expand** — calls DocExpandIdea on selected cell(s); chains asynchronously for multi-selection
-- **Translate** — translates cell text; auto-detects source language; result stored in TaggingRules
-- **Sync** — re-generates dependent components from the currently displayed text (idea → re-expand paragraph; paragraph → re-translate; translation → reverse-sync paragraph)
-- **Toggle** — calls DocToggleView on selected cell
-- **Note** — calls DocInsertNote
-- **All Prompts** — bulk-switches all documentation cells to idea (prompt) view
-- **All Paragraphs** — bulk-switches all documentation cells to paragraph view
-- **All Translations** — bulk-switches all documentation cells to translation view
-- **Export MD** — calls DocExportMarkdown
-- **Export LaTeX** — calls DocExportLaTeX
+各セルの TaggingRules に以下のキーでメタデータを保持する。
 
-## Cell Modes (TaggingRules metadata)
-
-TaggingRules key root: `"documentation"`. Mode values stored at `{"documentation","mode"}`:
-- `"idea"` — prompt/idea text shown (amber left border)
-- `"paragraph"` — expanded paragraph shown (green left border)
-- `"translated"` — cell has a stored translation; original text currently shown (light-blue left border)
-- `showTranslation=True` + mode `"paragraph"` — translation currently displayed (blue left border)
-
-## Export Cell Style Mapping
-
-| Cell Style | Markdown | LaTeX |
+| キーパス | 値例 | 意味 |
 |---|---|---|
-| Title | `# text` | `\title{text}` |
-| Chapter | `# text` | `\chapter{text}` |
-| Section | `## text` | `\section{text}` |
-| Subsection | `### text` | `\subsection{text}` |
-| Subsubsection | `#### text` | `\subsubsection{text}` |
-| Item | `- text` | `\item text` |
-| ItemNumbered | `1. text` | `\item text` |
-| Input | ` ```mathematica ... ``` ` | `\begin{lstlisting}[language=Mathematica]...\end{lstlisting}` |
-| Output (text) | ` ```...``` ` | `\begin{verbatim}...\end{verbatim}` |
-| Output (image) | `![name](file)` | `\includegraphics{file}` |
-| DisplayFormula | `$$...$$` | `\[...\]` |
-| Note | skipped | skipped |
+| `{"documentation", "mode"}` | `"idea"` / `"paragraph"` / `"translated"` | 現在の表示モード |
+| `{"documentation", "alternate"}` | String | トグル先テキスト |
+| `{"documentation", "translation"}` | String | 翻訳テキスト |
+| `{"documentation", "translationSrc"}` | String | 翻訳元テキスト |
+| `{"documentation", "showTranslation"}` | True/False | 翻訳表示中かどうか |
+
+## セル視覚スタイル（内部定数）
+
+| モード | 枠線色 |
+|---|---|
+| パラグラフ (`"paragraph"`) | 緑 RGBColor[0.3, 0.6, 0.5] |
+| アイデア (`"idea"`) | 琥珀色 RGBColor[0.8, 0.65, 0.3] |
+| 翻訳表示 (`showTranslation=True`) | 青 RGBColor[0.3, 0.45, 0.75] |
+| 翻訳付き元テキスト | 水色 RGBColor[0.5, 0.75, 0.9] |
+
+Background と CellDingbat は NBAccess の管轄であり Documentation 側では変更しない。
+
+## 典型的な使用パターン
+
+```mathematica
+(* パレット経由が標準使用法 *)
+ShowDocPalette[]
+
+(* プログラム的に使う場合 *)
+nb = EvaluationNotebook[];
+DocExpandIdea[nb, 3]          (* セル3のアイデアを展開 *)
+DocToggleView[nb, 3]          (* アイデア↔パラグラフ切替 *)
+DocInsertNote[nb]             (* メモセル挿入 *)
+DocExportMarkdown[nb]         (* Markdown エクスポート *)
+DocExportLaTeX[nb]            (* LaTeX エクスポート *)
+
+(* 翻訳先言語を変更してから使う *)
+$DocTranslationLanguage = "French";
+```
+
+## 依存パッケージ
+
+- NBAccess: https://github.com/transreal/NBAccess — セルアクセス・LLM ルーティング・プライバシー管理
+- claudecode: https://github.com/transreal/claudecode — LLM コールバック・パレット設定

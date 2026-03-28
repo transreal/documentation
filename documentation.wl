@@ -1149,6 +1149,83 @@ iDocSyncSelected[] :=
     DocSync[nb, cellIdx, Fallback -> ClaudeCode`GetPaletteFallback[]]
   ];
 
+(* 選択セルから展開データを削除する *)
+iDocDeleteExpandSelected[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    If[ChoiceDialog[
+        iL["選択セルの展開データを削除しますか？\nこの操作は元に戻せません。",
+           "Delete expand data from selected cell(s)?\nThis cannot be undone."],
+        {iL["削除", "Delete"] -> True, iL["キャンセル", "Cancel"] -> False},
+        WindowTitle -> iL["確認", "Confirm"]],
+      Do[
+        Module[{mode},
+          mode = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagMode];
+          If[mode === "paragraph" || mode === "idea",
+            (* パラグラフ表示中ならアイデアに戻す *)
+            If[mode === "paragraph",
+              Module[{ideaText},
+                ideaText = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagAlternate];
+                If[StringQ[ideaText] && StringTrim[ideaText] =!= "",
+                  NBAccess`NBInvalidateCellsCache[nb];
+                  NBAccess`NBCellWriteText[nb, idx, ideaText]]]];
+            (* タグをクリア *)
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagAlternate, None];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, None];
+            (* 枠線をリセット *)
+            NBAccess`NBCellSetOptions[nb, idx,
+              CellFrame -> 0, CellFrameColor -> None]]],
+      {idx, cellIdxs}]]
+  ];
+
+(* 選択セルから翻訳データを削除する *)
+iDocDeleteTranslateSelected[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    If[ChoiceDialog[
+        iL["選択セルの翻訳データを削除しますか？\nこの操作は元に戻せません。",
+           "Delete translation data from selected cell(s)?\nThis cannot be undone."],
+        {iL["削除", "Delete"] -> True, iL["キャンセル", "Cancel"] -> False},
+        WindowTitle -> iL["確認", "Confirm"]],
+      Do[
+        Module[{showTrans, mode, srcText},
+          showTrans = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagShowTranslation];
+          mode = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagMode];
+          (* 翻訳表示中なら元テキストに戻す *)
+          If[TrueQ[showTrans],
+            srcText = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagTranslationSrc];
+            If[StringQ[srcText] && StringTrim[srcText] =!= "",
+              NBAccess`NBInvalidateCellsCache[nb];
+              NBAccess`NBCellWriteText[nb, idx, srcText]]];
+          (* 翻訳タグをクリア *)
+          NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagTranslation, None];
+          NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagTranslationSrc, None];
+          NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagShowTranslation, None];
+          (* mode が "translated" なら mode もクリア *)
+          If[mode === "translated",
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, None]];
+          (* 枠線を展開状態に応じて再設定 *)
+          Module[{curMode},
+            curMode = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagMode];
+            Which[
+              curMode === "paragraph",
+                NBAccess`NBCellSetOptions[nb, idx,
+                  Sequence @@ $iDocParagraphCellOpts],
+              curMode === "idea",
+                NBAccess`NBCellSetOptions[nb, idx,
+                  Sequence @@ $iDocIdeaCellOpts],
+              True,
+                NBAccess`NBCellSetOptions[nb, idx,
+                  CellFrame -> 0, CellFrameColor -> None]]]],
+      {idx, cellIdxs}]]
+  ];
+
 (* ============================================================
    Note セル挿入
    ============================================================ *)
@@ -1770,6 +1847,14 @@ ShowDocPalette[] := (
       iDocButton[iL["\[LeftRightArrow] 切替", "\[LeftRightArrow] Toggle"],
         RGBColor[0.35, 0.45, 0.65],
         iDocToggleSelected[]],
+      Spacer[1],
+      iDocButton[iL["\[Times] 展開削除", "\[Times] Del Expand"],
+        RGBColor[0.6, 0.35, 0.35],
+        iDocDeleteExpandSelected[]],
+      iDocButton[iL["\[Times] 翻訳削除", "\[Times] Del Translate"],
+        RGBColor[0.6, 0.35, 0.35],
+        iDocDeleteTranslateSelected[]],
+      Spacer[1],
       iDocButton[iL["\[FilledSmallSquare] メモ", "\[FilledSmallSquare] Note"],
         RGBColor[0.7, 0.63, 0.35],
         iDocInsertNoteAction[]],
