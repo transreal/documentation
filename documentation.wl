@@ -25,7 +25,8 @@ DocExpandIdea::usage =
   "DocExpandIdea[nb, cellIdx] は指定セルのアイデアテキストを\n" <>
   "LLM を使って文章品質のパラグラフに展開する。\n" <>
   "元のアイデアはセルの TaggingRules に保存される。\n" <>
-  "既にパラグラフ表示中の場合は保存済みアイデアから再展開する。\n" <>
+  "既にパラグラフ表示中の場合は、プロンプト・指示・文脈に従い\n" <>
+  "現在のパラグラフ文章を尊重しつつインプレース更新する。\n" <>
   "Options: Fallback -> False\n" <>
   "例: DocExpandIdea[EvaluationNotebook[], 3]";
 
@@ -504,6 +505,94 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "\n\nPrevious paragraph:\n" <> prevParagraph
   ];
 
+(* パラグラフ更新プロンプト: パラグラフ表示中に展開ボタンを押した場合、
+   現在のパラグラフを尊重しつつ、プロンプト・指示・文脈に従い更新する *)
+iDocUpdateParagraphPromptFn[ideaText_String, currentParagraph_String, context_String:""] :=
+  context <>
+  iL[
+    "あなたは熟練したライターです。以下の「現在の段落」を、" <>
+    "「プロンプト（アイデア）」の指示に基づいて更新してください。\n" <>
+    "ルール:\n" <>
+    "- 現在の段落の文体・構成・ユーザーの修正を最大限尊重する\n" <>
+    "- プロンプトの内容と、Directives（指示）の内容に従って必要箇所を更新する\n" <>
+    "- ドキュメントコンテキストや文献情報がある場合は、それに基づいて内容の正確性を向上させる\n" <>
+    "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
+    "- 【最重要】段落の本文テキストのみを出力すること。" <>
+    "「Let me」「まず」「では」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
+    "出力の最初の文字から最後の文字まですべてが段落の本文でなければならない\n" <>
+    "- マークダウン記法は使わない\n" <>
+    "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
+    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
+    "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
+    "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
+    "資料を読む過程は絶対に出力に含めない\n" <>
+    "- リクエストを実行できない場合は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
+    "プロンプト（アイデア）:\n" <> ideaText <>
+    "\n\n現在の段落:\n" <> currentParagraph,
+    "You are a skilled writer. Update the 'Current paragraph' below based on " <>
+    "the 'Prompt (idea)' and any provided Directives.\n" <>
+    "Rules:\n" <>
+    "- Preserve the style, structure, and user edits of the current paragraph as much as possible\n" <>
+    "- Update content based on the prompt, Directives, and document context\n" <>
+    "- If references or literature are available in context, use them to improve accuracy\n" <>
+    "- Output language: " <> iDocOutputLanguage[] <> "\n" <>
+    "- CRITICAL: Output ONLY the paragraph body text. " <>
+    "Do NOT include any preamble, thinking, meta-commentary, or explanation " <>
+    "such as 'Let me...', 'I will...', 'Here is...', 'Based on...'. " <>
+    "The very first character of your output must be the start of the paragraph itself\n" <>
+    "- Do not use markdown formatting\n" <>
+    "- If Directives are provided, strictly follow their instructions\n" <>
+    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
+    "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
+    "- If attached files are mentioned in context, use their content but NEVER output your reading process\n" <>
+    "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
+    "Prompt (idea):\n" <> ideaText <>
+    "\n\nCurrent paragraph:\n" <> currentParagraph
+  ];
+
+(* 翻訳更新プロンプト: 翻訳表示中に翻訳ボタンを押した場合、
+   現在の翻訳を尊重しつつ、パラグラフ・指示・文脈に従い更新する *)
+iDocUpdateTranslationPromptFn[currentTranslation_String, targetLang_String,
+    paragraph_String, ideaText_String, context_String:""] :=
+  context <>
+  iL[
+    "以下の「現在の翻訳」を更新してください。\n" <>
+    "「対応するパラグラフ」の内容に忠実に、翻訳の品質を向上させてください。\n" <>
+    If[ideaText =!= "", "「プロンプト」は段落の背景情報として参照してください。\n", ""] <>
+    "ルール:\n" <>
+    "- 現在の翻訳の文体・ユーザーの修正を最大限尊重する\n" <>
+    "- 対応するパラグラフの内容に基づいて、翻訳の正確性・流暢さを向上させる\n" <>
+    "- Directives（指示）が提供されている場合は、翻訳に関する指示を厳守する\n" <>
+    "- Dictionary（辞書）が提供されている場合は、その用語対応を必ず使用する\n" <>
+    "- 出力言語: " <> targetLang <> "\n" <>
+    "- 【最重要】翻訳テキストのみを出力すること。" <>
+    "前置き、思考過程、説明、メタコメントは絶対に含めない\n" <>
+    "- マークダウン記法は使わない\n" <>
+    "- 前後の文脈を考慮して、文書全体の流れに合った翻訳を生成する\n" <>
+    "- リクエストを実行できない場合は、翻訳ではなく [ERROR]: に続けて理由を出力する\n\n" <>
+    If[ideaText =!= "", "プロンプト:\n" <> ideaText <> "\n\n", ""] <>
+    "対応するパラグラフ:\n" <> paragraph <>
+    "\n\n現在の翻訳:\n" <> currentTranslation,
+    "Update the 'Current translation' below to improve its quality.\n" <>
+    "Base the update on the 'Corresponding paragraph' content.\n" <>
+    If[ideaText =!= "", "The 'Prompt' provides background context for the paragraph.\n", ""] <>
+    "Rules:\n" <>
+    "- Preserve the style and user edits in the current translation as much as possible\n" <>
+    "- Improve accuracy and fluency based on the corresponding paragraph\n" <>
+    "- If Directives are provided, strictly follow translation-related instructions\n" <>
+    "- If a Dictionary is provided, ALWAYS use the specified term mappings\n" <>
+    "- Target language: " <> targetLang <> "\n" <>
+    "- CRITICAL: Output ONLY the updated translation. " <>
+    "Do NOT include any preamble, thinking, or meta-commentary. " <>
+    "The very first character must be the start of the translation itself\n" <>
+    "- Do not use markdown formatting\n" <>
+    "- Consider the surrounding context to produce a translation that fits the overall document flow\n" <>
+    "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
+    If[ideaText =!= "", "Prompt:\n" <> ideaText <> "\n\n", ""] <>
+    "Corresponding paragraph:\n" <> paragraph <>
+    "\n\nCurrent translation:\n" <> currentTranslation
+  ];
+
 (* ============================================================
    セル書き込みヘルパー: 編集追跡付き
    ============================================================ *)
@@ -632,7 +721,8 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
 Options[DocExpandIdea] = {Fallback -> False};
 
 DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
-  Module[{mode, prevParagraph, useFallback, promptFn, context, dictionary, directives},
+  Module[{mode, prevParagraph, useFallback, promptFn, context, dictionary, directives,
+          currentParagraph, ideaText, prompt, privLevel},
     useFallback = TrueQ[OptionValue[Fallback]];
 
     (* Note/Dictionary/Directive セルは対象外 *)
@@ -641,14 +731,68 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     (* 現在のモード確認 (NBAccess 経由) *)
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
 
-    (* パラグラフ表示中 → 展開禁止 *)
+    (* パラグラフ表示中 → パラグラフをインプレース更新 *)
     If[mode === "paragraph",
-      MessageDialog[iL[
-        "パラグラフモードでは展開できません。\n" <>
-        "先に「切替」でプロンプトモードに戻してから、プロンプトを修正して再展開してください。",
-        "Cannot expand in paragraph mode.\n" <>
-        "Switch to idea mode first, edit the prompt, then expand again."]];
-      Return[$Failed]];
+      NBAccess`NBInvalidateCellsCache[nb];
+      currentParagraph = NBAccess`NBCellGetText[nb, cellIdx];
+      ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+      If[!StringQ[currentParagraph] || StringTrim[currentParagraph] === "",
+        Return[$Failed]];
+      If[!StringQ[ideaText], ideaText = ""];
+      (* コンテキスト収集 *)
+      directives = iDocCollectDirectives[nb];
+      dictionary = iDocCollectDictionary[nb];
+      context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+      prompt = iDocUpdateParagraphPromptFn[ideaText, currentParagraph, context];
+      privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["パラグラフ更新中...", "Updating paragraph..."]];
+      With[{nb2 = nb, ci = cellIdx},
+        NBAccess`$NBLLMQueryFunc[prompt,
+          Function[response,
+            If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+               !StringStartsQ[response, "[ERROR]"],
+              NBAccess`NBInvalidateCellsCache[nb2];
+              iDocWriteAndTrack[nb2, ci, StringTrim[response]];
+              (* 翻訳があれば連鎖更新 *)
+              Module[{trans, tl, oldTrans, idea2,
+                      ctx2, dict2, dir2},
+                trans = NBAccess`NBCellGetTaggingRule[nb2, ci, $iDocTagTranslation];
+                If[StringQ[trans] && StringTrim[trans] =!= "",
+                  tl = iDocTranslationTarget[];
+                  oldTrans = trans;
+                  idea2 = NBAccess`NBCellGetTaggingRule[nb2, ci, $iDocTagAlternate];
+                  If[!StringQ[idea2], idea2 = ""];
+                  dir2 = iDocCollectDirectives[nb2];
+                  dict2 = iDocCollectDictionary[nb2];
+                  ctx2 = dir2 <> dict2 <> iDocCollectContext[nb2, ci];
+                  NBAccess`$NBLLMQueryFunc[
+                    iDocReTranslatePromptFn[StringTrim[response], tl, oldTrans, idea2, ctx2],
+                    Function[tResponse,
+                      If[StringQ[tResponse] && !StringStartsQ[tResponse, "Error"] &&
+                         !StringStartsQ[tResponse, "[ERROR]"],
+                        NBAccess`NBCellSetTaggingRule[nb2, ci,
+                          $iDocTagTranslation, StringTrim[tResponse]];
+                        NBAccess`NBCellSetTaggingRule[nb2, ci,
+                          $iDocTagTranslationSrc, StringTrim[response]]];
+                      Quiet[CurrentValue[nb2, WindowStatusArea] =
+                        iL["更新完了", "Update complete"]];
+                      RunScheduledTask[With[{pNb = nb2},
+                        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+                    nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, ci],
+                    Fallback -> useFallback],
+                  (* 翻訳なし: 完了 *)
+                  Quiet[CurrentValue[nb2, WindowStatusArea] =
+                    iL["更新完了", "Update complete"]];
+                  RunScheduledTask[With[{pNb = nb2},
+                    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+              (* エラー *)
+              Quiet[CurrentValue[nb2, WindowStatusArea] =
+                iL["更新エラー", "Update error"]];
+              RunScheduledTask[With[{pNb = nb2},
+                Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+          nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
+      Return[]];
 
     (* ノートブックコンテキスト収集: 周辺セル + アタッチメント情報 + 辞書 + 指示 *)
     context = iDocCollectContext[nb, cellIdx];
@@ -939,7 +1083,7 @@ iDocReTranslatePromptFn[text_String, targetLang_String,
 DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
   Module[{currentText, storedTranslation, storedSrc, showTrans,
           mode, targetLang, useFallback, ideaText, promptFn,
-          dictionary, directives, metaContext},
+          dictionary, directives, metaContext, privLevel, prompt, paragraph},
     useFallback = TrueQ[OptionValue[Fallback]];
     (* Note/Dictionary/Directive セルは対象外 *)
     If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
@@ -957,14 +1101,47 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         "Expand to paragraph first, then translate."]];
       Return[$Failed]];
 
-    (* 翻訳不可: 翻訳表示中 *)
+    (* 翻訳表示中 → 翻訳をインプレース更新 *)
     If[TrueQ[showTrans],
-      MessageDialog[iL[
-        "翻訳表示中です。\n" <>
-        "「切替」で元テキストに戻してから再翻訳してください。",
-        "Currently showing translation.\n" <>
-        "Toggle back to original text before re-translating."]];
-      Return[$Failed]];
+      currentText = NBAccess`NBCellGetText[nb, cellIdx];
+      If[!StringQ[currentText] || StringTrim[currentText] === "",
+        Return[$Failed]];
+      paragraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
+      If[!StringQ[paragraph] || StringTrim[paragraph] === "",
+        paragraph = ""];
+      ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+      If[!StringQ[ideaText], ideaText = ""];
+      targetLang = iDocTranslationTarget[];
+      (* コンテキスト収集 *)
+      directives = iDocCollectDirectives[nb];
+      dictionary = iDocCollectDictionary[nb];
+      metaContext = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+      prompt = iDocUpdateTranslationPromptFn[currentText, targetLang,
+        paragraph, ideaText, metaContext];
+      privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["翻訳更新中...", "Updating translation..."]];
+      With[{nb2 = nb, ci = cellIdx, srcPara = paragraph},
+        NBAccess`$NBLLMQueryFunc[prompt,
+          Function[response,
+            If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+               !StringStartsQ[response, "[ERROR]"],
+              NBAccess`NBInvalidateCellsCache[nb2];
+              NBAccess`NBCellSetTaggingRule[nb2, ci,
+                $iDocTagTranslation, StringTrim[response]];
+              If[srcPara =!= "",
+                NBAccess`NBCellSetTaggingRule[nb2, ci,
+                  $iDocTagTranslationSrc, srcPara]];
+              iDocWriteAndTrack[nb2, ci, StringTrim[response]];
+              Quiet[CurrentValue[nb2, WindowStatusArea] =
+                iL["翻訳更新完了", "Translation update complete"]],
+              (* エラー *)
+              Quiet[CurrentValue[nb2, WindowStatusArea] =
+                iL["翻訳更新エラー", "Translation update error"]]];
+            RunScheduledTask[With[{pNb = nb2},
+              Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+          nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
+      Return[]];
 
     currentText = NBAccess`NBCellGetText[nb, cellIdx];
     If[!StringQ[currentText] || StringTrim[currentText] === "",
@@ -1601,10 +1778,9 @@ iDocExpandSelectedChain[nb_, idxs_, pos_, fb_] :=
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["展開中: ", "Expanding: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
-    Module[{cellIdx = idxs[[pos]], mode},
-      mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[mode === "paragraph" || iDocIsMetaCell[nb, cellIdx],
-        (* パラグラフモード / Note セルはスキップ *)
+    Module[{cellIdx = idxs[[pos]]},
+      If[iDocIsMetaCell[nb, cellIdx],
+        (* Note/Dictionary/Directive セルはスキップ *)
         iDocExpandSelectedChain[nb, idxs, pos + 1, fb],
         (* 展開: completionFn 内で次へ進む。
            DocExpandIdea は内部で NBCellTransformWithLLM を使い、
