@@ -86,3 +86,36 @@ Scan[DocExpandIdea[nb, #] &, idxs]
 ```
 
 > ノートブック内の全セルに対してパラグラフ展開を試みます（アイデアが未入力のセルはスキップされます）。
+
+---
+
+## 例 9: プロンプトからコードを生成して実行する（計算モード）
+
+```mathematica
+nb = EvaluationNotebook[];
+DocCompute[nb, 4]
+```
+
+> セル 4 に記述されたプロンプトテキストを LLM に送信し、実行可能な Wolfram Language コードを生成します。生成されたコードはセルに書き込まれ、計算モード（オレンジ枠線）で表示されます。
+
+---
+
+## 例 10: Fallback を有効にして計算を実行する
+
+```mathematica
+nb = EvaluationNotebook[];
+DocCompute[nb, 4, Fallback -> True]
+```
+
+> メインモデルが利用不可の場合にフォールバックモデルで計算を試みます。`Fallback -> False`（デフォルト）ではエラー時に処理を停止します。
+
+---
+
+## 例 11: 計算モードとプロンプトモードを切り替える
+
+```mathematica
+nb = EvaluationNotebook[];
+DocToggleView[nb, 4]
+```
+
+> セル 4 が計算結果（コード）表示中であればプロンプト表示に、プロンプト表示中であれば計算モードに切り替わります。コード表示中のセルに直接 `DocCompute` を再適用することはできません。プロンプト表示に戻してから再度 `DocCompute` を実行してください。
