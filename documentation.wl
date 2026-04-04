@@ -3484,6 +3484,9 @@ $iDocLaTeXifyPrompt =
   "- Model names with numbers used mathematically: 2PCA(4) → 2PCA(4) (keep as-is if not pure math)\n" <>
   "- 2*2 or 2×2 blocks → $2 \\times 2$\n" <>
   "- Do NOT change any non-mathematical text — preserve it EXACTLY\n" <>
+  "- CRITICAL: Preserve ALL existing LaTeX commands EXACTLY as they appear, including:\n" <>
+  "  \\cite{...}, \\ref{...}, \\figurename, \\label{...}, and any other LaTeX commands.\n" <>
+  "  These must appear in the output character-for-character identical to the input.\n" <>
   "- Do NOT add any explanation, preamble, or commentary\n" <>
   "- Do NOT add \\begin{document}, \\documentclass, or any LaTeX preamble commands\n" <>
   "- Do NOT wrap entire sentences in math mode — only the mathematical parts\n" <>
@@ -3495,7 +3498,8 @@ $iDocLaTeXifyPrompt =
    アタッチされた PDF の内容を参照コンテキストとして使用。
    Opus モデルで高精度に変換する。 *)
 iDocLaTeXifyMath[text_String, pdfContext_String:""] :=
-  Module[{prompt, result, model},
+  Module[{prompt, result, model, protected, placeholders = <||>, counter = 0,
+          restored, matches},
     (* 短すぎるテキストやセクション見出しのみのセルはスキップ *)
     If[StringLength[text] < 30, Return[text]];
     (* LaTeX コマンドで始まる行（見出し等）は中身だけ処理 *)
@@ -3507,12 +3511,38 @@ iDocLaTeXifyMath[text_String, pdfContext_String:""] :=
     model = If[StringQ[$ClaudeModel] && StringLength[$ClaudeModel] > 0,
       $ClaudeModel, "claude-sonnet-4-20250514"];
 
+    (* === LaTeX コマンドをプレースホルダーで保護 ===
+       \cite{...}, \ref{...}, \figurename~\ref{...}, \label{...} 等を
+       LLM に送る前に一意のプレースホルダーに置換し、戻り後に復元する。 *)
+    protected = text;
+    (* \figurename~\ref{...} を先に保護（\ref 単体の前に） *)
+    matches = StringCases[protected,
+      RegularExpression["\\\\figurename~\\\\ref\\{[^}]+\\}"]];
+    Do[Module[{tag = "LATEXCMD" <> ToString[++counter] <> "XDMC"},
+      placeholders[tag] = m;
+      protected = StringReplace[protected, m -> tag, 1]],
+    {m, matches}];
+    (* \cite{...}, \ref{...}, \label{...}, \eqref{...}, \pageref{...} を保護 *)
+    matches = StringCases[protected,
+      RegularExpression["\\\\(cite|ref|label|eqref|pageref)\\{[^}]+\\}"]];
+    Do[Module[{tag = "LATEXCMD" <> ToString[++counter] <> "XDMC"},
+      placeholders[tag] = m;
+      protected = StringReplace[protected, m -> tag, 1]],
+    {m, matches}];
+    (* Markdown 引用・図参照リンク [text](#ref-key) / [Figure N](#fig-label) を保護 *)
+    matches = StringCases[protected,
+      RegularExpression["\\[[^\\]]+\\]\\(#(ref|fig)-[^)]+\\)"]];
+    Do[Module[{tag = "LATEXCMD" <> ToString[++counter] <> "XDMC"},
+      placeholders[tag] = m;
+      protected = StringReplace[protected, m -> tag, 1]],
+    {m, matches}];
+
     prompt = $iDocLaTeXifyPrompt <>
       If[StringLength[pdfContext] > 0,
         "\n\n=== Reference context from attached PDF (use for accurate math notation) ===\n" <>
         StringTake[pdfContext, Min[8000, StringLength[pdfContext]]] <>
         "\n=== End reference context ===\n\n", ""] <>
-      text;
+      protected;
 
     result = Quiet[Check[
       LLMSynthesize[prompt,
@@ -3521,8 +3551,12 @@ iDocLaTeXifyMath[text_String, pdfContext_String:""] :=
     If[StringQ[result] && StringLength[result] > 0 &&
        !StringStartsQ[result, "Error"] &&
        !StringStartsQ[result, "[ERROR]"] &&
-       StringLength[result] > StringLength[text] * 0.3,
-      result,
+       StringLength[result] > StringLength[protected] * 0.3,
+      (* プレースホルダーを元の LaTeX コマンドに復元 *)
+      restored = result;
+      Do[restored = StringReplace[restored, tag -> placeholders[tag]],
+        {tag, Keys[placeholders]}];
+      restored,
       text]
   ];
 

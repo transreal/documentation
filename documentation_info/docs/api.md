@@ -1,115 +1,97 @@
-# Documentation` パッケージ API リファレンス
+# Documentation` API Reference
 
-アウトラインプロセッサ拡張パッケージ。アイデア→パラグラフ展開、翻訳、エクスポート機能を提供する。
-依存: NBAccess`, ClaudeCode`
+パッケージ: `Documentation`` — アウトラインプロセッサ拡張。アイデア→パラグラフ展開・翻訳・エクスポートを提供する。
+依存: [NBAccess](https://github.com/transreal/NBAccess), [claudecode](https://github.com/transreal/claudecode)
+ロード: `Needs["Documentation`"]`
 
 ## セル操作
 
 ### DocExpandIdea[nb, cellIdx, opts]
-指定セルのアイデアテキストをLLMで文章品質のパラグラフに展開する。パラグラフ表示中の場合はインプレース更新。元のアイデアはTaggingRulesに保存される。
+指定セルのアイデアテキストをLLMでパラグラフに展開する。パラグラフ表示中は現在の文章を尊重しつつインプレース更新する。元のアイデアはTaggingRulesに保存される。Note/Dictionary/Directive/Bibliographyセルは対象外。
 → $Failed | Null
-Options: Fallback -> False (Trueでフォールバックモデルを使用)
-例: DocExpandIdea[EvaluationNotebook[], 3, Fallback -> True]
+Options: Fallback -> False (TrueでフォールバックLLMを使用)
 
-### DocToggleView[nb, cellIdx] → Null | String
-セルのアイデア↔パラグラフ↔翻訳の表示を切り替える。現在の表示内容（編集済みでも）を保存してから切り替える。編集済みの場合はバックグラウンドで同期処理を実行する。
+### DocToggleView[nb, cellIdx] → String | Null
+セルのアイデア↔パラグラフ↔翻訳の表示を循環切替する。編集済み内容を保存してから切り替える。翻訳がある場合はパラグラフ→翻訳→アイデアの順に遷移する。
 
 ### DocSplitCell[nb, cellIdx] → Null
-カーソル位置でセルを前半・後半に分割する。パラグラフ/翻訳表示中は表示テキストと保存データを対応位置で分割し、プロンプトがあればLLMで前半・後半用に再生成する。
+カーソル位置でセルを前半・後半に分割する。パラグラフ/翻訳表示中は保存データも対応位置で分割し、プロンプトがあればLLMで再生成する。普通のセルはテキストを単純に分割する。
 
 ### DocMergeCells[nb, cellIdxs] → Null
-複数セルを単一セルに合併する。テキスト・プロンプト・翻訳をそれぞれ結合し最初のセルに統合する。モード・スタイルは最初のセルを維持する。
-例: DocMergeCells[EvaluationNotebook[], {2, 3, 4}]
+複数セルを単一セルに合併する。テキスト・プロンプト・翻訳をそれぞれ結合し、モード・スタイルは最初のセルを維持する。
 
 ## セル挿入
 
 ### DocInsertNote[nb] → Null
-現在のカーソル位置にNoteスタイルのセルを挿入する。ノートブックにスタイル"Note"が定義済みならそれを使い、なければカスタム定義（薄い黄色背景、左琥珀色枠線）のセルを挿入する。
+カーソル位置にNoteスタイルのセルを挿入する。スタイル"Note"が定義済みならそれを使い、なければカスタム定義（薄い黄色背景・左枠線付き）のセルを挿入する。
 
 ### DocInsertDictionary[nb] → Null
-現在のカーソル位置にDictionaryスタイルのセルを挿入する。翻訳時の用語対応指定用。形式: {{<<Japanese>>, <<English>>, <<Context>>}, {"用語1", "term1", "文脈"}, ...}
+カーソル位置にDictionaryスタイルのセルを挿入する。翻訳時にLLMが遵守する用語対応を指定する。形式: `{{<<Japanese>>, <<English>>, <<Context>>}, {"用語1", "term1", "文脈"}, ...}`
 
 ### DocInsertDirective[nb] → Null
-現在のカーソル位置にDirectiveスタイルのセルを挿入する。展開・翻訳・同期実行時にLLMが順守すべき指示を記載する。複数配置可能。
+カーソル位置にDirectiveスタイルのセルを挿入する。展開・翻訳・同期の実行時にLLMが順守すべき指示を記載する。複数のDirectiveセルを配置可能。
 
 ### DocInsertBibliography[nb] → Null
-現在のカーソル位置にBibliographyスタイルのセルを挿入する。形式: {{<<Key>>, <<Author>>, <<Year>>, <<Title>>}, {"key", "author", "year", "title"}, ...}。本文中で`<<cite:key>>`と記述するとエクスポート時に自動変換される。
+カーソル位置にBibliographyスタイルのセルを挿入する。形式: `{{<<Key>>, <<Author>>, <<Year>>, <<Title>>}, {"key", "author", "year", "title"}, ...}` 本文中の `<<cite:key>>` はエクスポート時に自動変換される。
 
 ## メタデータ編集
 
-### DocEditFigureMeta[nb, cellIdx] → Null | $Failed
-画像セルの図メタデータ（ラベル・キャプション）を編集するダイアログを表示する。本文中で`<<fig:label>>`と記述するとエクスポート時に自動変換される。画像セルでない場合は$Failedを返す。
+### DocEditFigureMeta[nb, cellIdx] → Null
+画像セルのラベル（参照用キー）とキャプションを設定するダイアログを表示する。本文中の `<<fig:label>>` はエクスポート時に自動変換される。セルが画像でなければ$Failedを返す。
 
 ### DocEditRefSources[nb, cellIdx] → Null
-セルの依存資料を編集するダイアログを表示する。アタッチされたPDFのうち、そのセルの内容生成に使われた資料と参照ページ番号を設定する。LaTeX+Mathエクスポート時に該当ページのみをLLMに送付してトークン消費を削減する。
+セルの依存資料（アタッチPDFのうち内容生成に使った資料と参照ページ番号）を編集する。LaTeX+MathエクスポートでLLMへのトークン消費を削減するために使用される。
+
+## 翻訳・同期
+
+### DocTranslate[nb, cellIdx, opts]
+セルを翻訳する。パラグラフモードと普通のセル（モード未設定）が対象。アイデアモードと翻訳表示中は不可。翻訳結果はTaggingRulesに保持し切替可能。再翻訳時は既存翻訳を踏襲して更新する。
+→ Null
+Options: Fallback -> False (TrueでフォールバックLLMを使用)
+
+### DocSync[nb, cellIdx, opts]
+セルのアイデアとパラグラフを同期する。
+→ Null
+Options: Fallback -> False (TrueでフォールバックLLMを使用)
+
+## 引用・参照
 
 ### DocAutoInsertCitations[nb] → Null
-ノートブック内の全セルに自動引用を挿入する。依存資料（refSources）から文献リストを構築し、LLMが本文中の適切な位置に`<<cite:key>>`マーカーを挿入する。Bibliographyセルが存在しなければ末尾に自動生成する。
+ノートブック内の全セルに自動引用を挿入する。依存資料（refSources）から文献リストを構築し、LLMが本文中の適切な位置に `<<cite:key>>` マーカーを挿入する。Bibliographyセルが存在しなければ末尾に自動生成する。
+
+## 計算
+
+### DocCompute[nb, cellIdx, opts]
+セルの計算プロンプトからコードを生成・更新する。
+→ Null
+Options: Fallback -> False (TrueでフォールバックLLMを使用)
 
 ## エクスポート
 
 ### DocExportMarkdown[nb, opts]
-ノートブックをMarkdown形式でエクスポートする。出力先: NotebookDirectory[]/<ノートブック名>_md/。Note/Dictionary/Directive/Bibliographyスタイルのセルは除外。画像はラスター→PNG、ベクター/計算結果→PDF。`<<fig:label>>`と`<<cite:key>>`は自動変換される。InputセルはMathematicaコードブロック、数式はTeXに変換される。
-→ Null
+ノートブックをMarkdown形式でエクスポートする。出力先: `NotebookDirectory[]/<ノートブック名>_md/`。Note/Dictionary/Directive/Bibliographyセルは除外。画像はラスター→PNG、ベクター/計算結果→PDF。`<<fig:label>>`・`<<cite:key>>`を自動変換する。InputセルはMathematicaコードブロック、数式はTeXに変換する。
+→ String (出力ディレクトリパス) | $Failed
 Options: "MathFormat" -> False (TrueでLLMによる数式自動フォーマット)
 
 ### DocExportLaTeX[nb, opts]
-ノートブックをLaTeX形式でエクスポートする。出力先: NotebookDirectory[]/<ノートブック名>_LaTeX/。Note/Dictionary/Directive/Bibliographyスタイルのセルは除外。`<<fig:label>>`は`\ref{fig:label}`に、`<<cite:key>>`は`\cite{key}`に変換される。
-→ Null
+ノートブックをLaTeX形式でエクスポートする。出力先: `NotebookDirectory[]/<ノートブック名>_LaTeX/`。`<<fig:label>>`→`\ref{fig:label}`、`<<cite:key>>`→`\cite{key}`に変換する。Note/Dictionary/Directive/Bibliographyセルは除外。
+→ String | $Failed
 Options: "MathFormat" -> False (TrueでLLMによる数式自動フォーマット)
 
 ### DocExportWord[nb, opts]
-ノートブックをWord (.docx)形式でエクスポートする。内部でDocExportMarkdownを実行後、Pandocで.docxに変換する。Pandocのインストールが必要。出力先: NotebookDirectory[]/<ノートブック名>_md/<ノートブック名>.docx
-→ Null
-Options: "ReferenceDoc" -> None (テンプレート.docxファイルのパス), "MathFormat" -> False
-
-## 翻訳・同期（オプション宣言のみ）
-
-### DocTranslate[..., opts]
-Options: Fallback -> False
-
-### DocSync[..., opts]
-Options: Fallback -> False
-
-### DocCompute[..., opts]
-Options: Fallback -> False
+ノートブックをWord(.docx)形式でエクスポートする。内部でDocExportMarkdownを実行後Pandocで.docxに変換する。Pandocのインストールが必要。出力先: `NotebookDirectory[]/<ノートブック名>_md/<ノートブック名>.docx`
+→ String | $Failed
+Options: "ReferenceDoc" -> None (テンプレート.docxファイルのパス), "MathFormat" -> False (TrueでLLM数式フォーマット)
+例: `DocExportWord[EvaluationNotebook[], "ReferenceDoc" -> "/path/to/template.docx"]`
 
 ## パレット
 
 ### ShowDocPalette[] → Null
-ドキュメント作成用パレットを表示する。展開・トグル・翻訳・エクスポート等のボタンを含む。
+ドキュメント作成用パレットを表示する。
 
 ## 変数
 
 ### $DocTranslationLanguage
-型: String
-翻訳先の言語名。初期値: $Languageが英語以外なら"English"、英語なら"Japanese"。ユーザーが任意の言語名に変更可能。
-例: $DocTranslationLanguage = "French"
-
-## セルモードとTaggingRules
-
-各セルはTaggingRulesにメタデータを保持する。キーパス基底は"documentation"。
-
-| TaggingRulesパス | 内容 |
-|---|---|
-| {"documentation", "mode"} | "idea" / "paragraph" / "translated" / "compute" / "computePrompt" |
-| {"documentation", "alternate"} | トグル相手のテキスト（パラグラフ↔アイデア） |
-| {"documentation", "translation"} | 翻訳済みテキスト |
-| {"documentation", "translationSrc"} | 翻訳元テキスト |
-| {"documentation", "showTranslation"} | True/False（翻訳表示中フラグ） |
-| {"documentation", "excludeExport"} | True（エクスポート除外フラグ） |
-| {"documentation", "figLabel"} | 図の参照ラベル文字列 |
-| {"documentation", "figCaption"} | 図のキャプション文字列 |
-| {"documentation", "cleanText"} | 編集前クリーンコピー（編集検出用） |
-| {"documentation", "refSources"} | 依存資料リスト |
-
-## セルスタイルとビジュアル
-
-| モード | 枠線色 |
-|---|---|
-| paragraph（パラグラフ） | 緑 RGBColor[0.3, 0.6, 0.5] |
-| idea（アイデア） | 琥珀色 RGBColor[0.8, 0.65, 0.3] |
-| translated（翻訳表示中） | 青 RGBColor[0.3, 0.45, 0.75] |
-| translated元テキスト表示 | 水色 RGBColor[0.5, 0.75, 0.9] |
-
-メタセル（Note/Dictionary/Directive/Bibliography）はエクスポート・展開の対象外。
+型: String, 初期値: $Languageが英語以外なら"English"、英語なら"Japanese"
+翻訳先言語名。ユーザーが任意の言語名に変更可能。
+例: `$DocTranslationLanguage = "French"`

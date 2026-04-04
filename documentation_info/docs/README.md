@@ -192,11 +192,11 @@ ShowDocPalette[]
 
 | 関数 | 説明 |
 |------|------|
-| `DocExpandIdea[nb, cellIdx]` | アイデアをパラグラフに展開。展開済みセルはインプレース更新（`Fallback -> True` でフォールバックモデル使用） |
-| `DocToggleView[nb, cellIdx]` | アイデア / パラグラフ / 翻訳 / コードの循環切替 |
-| `DocTranslate[nb, cellIdx]` | セルを `$DocTranslationLanguage` に翻訳。翻訳済みセルは再翻訳（`Fallback -> True` でフォールバックモデル使用） |
-| `DocSync[nb, cellIdx]` | 現在表示テキストを基準に他コンポーネントを同期（`Fallback -> True` でフォールバックモデル使用） |
-| `DocCompute[nb, cellIdx]` | セルのプロンプトから実行可能な Wolfram Language コードを LLM で生成（`Fallback -> True` でフォールバックモデル使用） |
+| `DocExpandIdea[nb, cellIdx, opts]` | アイデアをパラグラフに展開。展開済みセルはインプレース更新（`Fallback -> True` でフォールバックモデル使用） |
+| `DocToggleView[nb, cellIdx]` | アイデア / パラグラフ / 翻訳 / コードの循環切替。翻訳がある場合はパラグラフ→翻訳→アイデアの順に遷移 |
+| `DocTranslate[nb, cellIdx, opts]` | セルを `$DocTranslationLanguage` に翻訳。翻訳済みセルは再翻訳（`Fallback -> True` でフォールバックモデル使用） |
+| `DocSync[nb, cellIdx, opts]` | 現在表示テキストを基準に他コンポーネントを同期（`Fallback -> True` でフォールバックモデル使用） |
+| `DocCompute[nb, cellIdx, opts]` | セルのプロンプトから実行可能な Wolfram Language コードを LLM で生成（`Fallback -> True` でフォールバックモデル使用） |
 | `DocSplitCell[nb, cellIdx]` | カーソル位置でセルを前半・後半に分割。保存データも対応位置で分割 |
 | `DocMergeCells[nb, cellIdxs]` | 複数セルを単一セルに合併。テキスト・プロンプト・翻訳をそれぞれ結合 |
 | `DocInsertNote[nb]` | Note スタイルセルを挿入（エクスポート対象外） |
@@ -206,9 +206,9 @@ ShowDocPalette[]
 | `DocEditFigureMeta[nb, cellIdx]` | 画像セルの図ラベル・キャプションを設定するダイアログを表示 |
 | `DocEditRefSources[nb, cellIdx]` | セルの依存資料（PDF・参照ページ番号）を編集するダイアログを表示 |
 | `DocAutoInsertCitations[nb]` | 依存資料から文献リストを構築し、本文に引用マーカーを自動挿入 |
-| `DocExportMarkdown[nb]` | Markdown エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
-| `DocExportLaTeX[nb]` | LaTeX エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
-| `DocExportWord[nb]` | MS-Word エクスポート（Pandoc 必要、`"ReferenceDoc" -> パス` でテンプレート指定） |
+| `DocExportMarkdown[nb, opts]` | Markdown エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
+| `DocExportLaTeX[nb, opts]` | LaTeX エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
+| `DocExportWord[nb, opts]` | MS-Word エクスポート（Pandoc 必要、`"ReferenceDoc" -> パス` でテンプレート指定） |
 | `ShowDocPalette[]` | パレットを表示 |
 
 #### パレットボタン一覧
@@ -249,7 +249,7 @@ ShowDocPalette[]
 |----------|------|
 | `api.md` | 全公開関数・変数のリファレンス、セルモードと TaggingRules 構造、エクスポートセルスタイルマッピングの詳細 |
 | `user_manual.md` | ユーザーマニュアル、パレット操作ガイド、各関数の引数説明、典型的なワークフロー |
-| `examples/example.md` | コード例集（パレット起動、展開、切替、翻訳設定、計算モード、複数セル操作） |
+| `examples/example.md` | コード例集（パレット起動、展開、切替、翻訳設定、計算モード、複数セル操作、同期） |
 | `setup.md` | インストール手順、動作要件、Pandoc のインストール方法、トラブルシューティング |
 
 ---
@@ -326,6 +326,19 @@ DocTranslate[EvaluationNotebook[], 3]
 
 セル 3 がすでに翻訳済みの場合、**» 翻訳** を再度実行すると現在のパラグラフから翻訳を再生成します。
 
+### 翻訳を編集してパラグラフに逆反映する
+
+```mathematica
+(* 翻訳表示中に同期すると、翻訳の編集内容がパラグラフに反映される *)
+DocSync[EvaluationNotebook[], 4]
+```
+
+### フォールバックモデルを許可して同期する
+
+```mathematica
+DocSync[EvaluationNotebook[], 4, Fallback -> True]
+```
+
 ### Directive セルで LLM に執筆指示を与える
 
 ノートブックに Directive セルを挿入し、以下のような指示を記載します。展開・翻訳・同期・計算のすべての LLM 呼び出しでこの指示が自動的に参照されます。
@@ -367,13 +380,6 @@ Scan[DocExpandIdea[nb, #] &, idxs]
 ```
 
 展開済みのセルも更新対象となります。
-
-### 翻訳を編集してパラグラフに逆反映する
-
-```mathematica
-(* 翻訳表示中に同期すると、翻訳の編集内容がパラグラフに反映される *)
-DocSync[EvaluationNotebook[], 4]
-```
 
 ### フォールバックモデルを許可して展開する
 
