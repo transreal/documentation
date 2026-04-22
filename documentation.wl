@@ -816,7 +816,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
       (* 編集済みならバックグラウンド同期 *)
       If[wasEdited,
         iDocPostToggleSync[nb, cellIdx, "translated", prevShowTrans,
-          ClaudeCode`GetPaletteFallback[]]];
+          currentText, ClaudeCode`GetPaletteFallback[]]];
       Return[]];
 
     (* ========================================================
@@ -844,7 +844,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         (* 編集済みならバックグラウンド同期 *)
         If[wasEdited,
           iDocPostToggleSync[nb, cellIdx, prevMode, True,
-            ClaudeCode`GetPaletteFallback[]]];
+            currentText, ClaudeCode`GetPaletteFallback[]]];
         Return[alternate]];
       (* fallback: 翻訳元を復元 *)
       If[StringQ[transSrc],
@@ -853,7 +853,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         iDocWriteAndTrack[nb, cellIdx, transSrc];];
       If[wasEdited,
         iDocPostToggleSync[nb, cellIdx, prevMode, True,
-          ClaudeCode`GetPaletteFallback[]]];
+          currentText, ClaudeCode`GetPaletteFallback[]]];
       Return[]];
 
     (* ========================================================
@@ -909,7 +909,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
         iDocWriteAndTrack[nb, cellIdx, storedTranslation];
         If[wasEdited,
           iDocPostToggleSync[nb, cellIdx, "paragraph", False,
-            ClaudeCode`GetPaletteFallback[]]];
+            currentText, ClaudeCode`GetPaletteFallback[]]];
         Return[storedTranslation]]];
 
     (* idea ↔ paragraph の2段階トグル *)
@@ -925,7 +925,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
     (* 編集済みならバックグラウンド同期 *)
     If[wasEdited,
       iDocPostToggleSync[nb, cellIdx, prevMode, False,
-        ClaudeCode`GetPaletteFallback[]]];
+        currentText, ClaudeCode`GetPaletteFallback[]]];
 
     alternate
   ];
@@ -1001,6 +1001,30 @@ iDocTranslateWithContextPromptFn[text_String, targetLang_String, ideaText_String
   "\n\nParagraph to translate:\n" <> text;
 
 (* 再翻訳プロンプト: 既存翻訳のユーザー修正を踏襲しつつ更新 *)
+(* 翻訳が編集された場合に、元パラグラフ（同じ言語）を逆更新するためのプロンプト。
+   DocSync の Case 3 および iDocPostToggleSync の翻訳→パラグラフ逆同期で使用される。 *)
+iDocReverseSyncPromptFn[translation_String, currentParagraph_String,
+    ideaText_String, targetLang_String, context_String:""] :=
+  context <>
+  "The paragraph below was translated, and then the user edited the translation.\n" <>
+  "Update the original paragraph (written in " <> targetLang <> ") so that it " <>
+  "reflects the meaning of the edited translation, while preserving the original " <>
+  "paragraph's structure, tone, and style as much as possible.\n" <>
+  "Rules:\n" <>
+  "- Output ONLY the updated paragraph text in " <> targetLang <> "\n" <>
+  "- No preamble, no explanation, no quotes, no markdown\n" <>
+  "- The very first character must be the start of the updated paragraph\n" <>
+  "- Preserve edits of the original paragraph that do not correspond to " <>
+    "changes in the translation\n" <>
+  "- Only modify parts of the paragraph that correspond to the translation edits\n" <>
+  "- If Directives are provided above, strictly follow their instructions\n" <>
+  "- If a Dictionary is provided above, ALWAYS use the specified term mappings\n" <>
+  "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
+  If[ideaText =!= "",
+    "Original prompt/idea:\n" <> ideaText <> "\n\n", ""] <>
+  "Current paragraph (to be updated):\n" <> currentParagraph <>
+  "\n\nEdited translation:\n" <> translation;
+
 iDocReTranslatePromptFn[text_String, targetLang_String,
     prevTranslation_String, ideaText_String, context_String:""] :=
   context <>
@@ -1382,6 +1406,308 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         MessageDialog[iL[
           "このセルには同期可能なコンテンツがありません。",
           "No syncable content in this cell."]]
+    ];
+  ];
+
+(* ============================================================
+   切替後同期: DocToggleView から呼ばれる非同期同期処理
+
+   切替前のセルが編集されていた場合に、切替後のセル内容に応じて
+   他のレイヤー（パラグラフ/翻訳/アイデア）を LLM で再生成する。
+
+   呼び出し側は切替前の表示テキスト (editedText) を渡す。
+   prevMode, prevShowTrans は切替前のセル状態。
+   ============================================================ *)
+iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
+    prevMode_String, prevShowTrans_, editedText_String, useFallback_] :=
+  Module[{translation, paragraph, ideaText, targetLang, prompt,
+          context, directives, dictionary, syncTag, privLevel,
+          savedScroll, useFb},
+    useFb = TrueQ[useFallback];
+    savedScroll = Quiet[AbsoluteCurrentValue[nb, NotebookAutoScroll]];
+    Quiet[SetOptions[nb, NotebookAutoScroll -> False]];
+
+    If[!StringQ[editedText] || StringTrim[editedText] === "",
+      Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+      Return[$Failed]];
+
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+
+    (* 進捗セル挿入でインデックスがずれても再発見できるようタグを付与 *)
+    syncTag = "doc-postsync-" <> ToString[UnixTime[]] <> "-" <>
+      ToString[RandomInteger[99999]];
+    NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+      {$iDocTagRoot, "syncTag"}, syncTag];
+
+    Which[
+      (* ==================== Case 1: パラグラフ編集 → 翻訳を更新 ==================== *)
+      (* 切替前: mode="paragraph" & showTrans=False (パラグラフ表示中に編集) *)
+      prevMode === "paragraph" && !TrueQ[prevShowTrans],
+        paragraph = editedText;
+        translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+        (* ideaText の取得: DocToggleView は切替時に alternate タグを上書きするため、
+           切替後のセル状態によって取得先が異なる:
+           - 経路1a (paragraph→idea 通常トグル): alternate=編集済paragraph、ideaは表示テキスト
+           - 経路1b (paragraph→translation): alternate=旧idea (変更なし) *)
+        Module[{curMode, curShow},
+          curMode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+          curShow = NBAccess`NBCellGetTaggingRule[nb, cellIdx,
+            $iDocTagShowTranslation];
+          If[curMode === "idea" && !TrueQ[curShow],
+            (* 経路1a *)
+            ideaText = NBAccess`NBCellGetText[nb, cellIdx],
+            (* 経路1b およびその他 *)
+            ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate]]];
+        If[!StringQ[ideaText], ideaText = ""];
+        If[!StringQ[translation] || StringTrim[translation] === "",
+          (* 翻訳なし → 同期不要 *)
+          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+            {$iDocTagRoot, "syncTag"}, Inherited];
+          Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+          Return[]];
+        targetLang = iDocTranslationTargetForText[paragraph];
+        prompt = iDocReTranslatePromptFn[paragraph, targetLang,
+          translation, ideaText, context];
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph,
+              stag = syncTag, ss = savedScroll, fb = useFb},
+          NBAccess`$NBLLMQueryFunc[prompt,
+            Function[response,
+              Module[{idx, curMode, curShow},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                idx = iDocFindSyncTag[nb2, stag];
+                If[idx === 0, idx = origIdx];
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagTranslation, StringTrim[response]];
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagTranslationSrc, srcPara];
+                  (* 切替後が翻訳表示中なら表示も更新 *)
+                  curMode = NBAccess`NBCellGetTaggingRule[nb2, idx, $iDocTagMode];
+                  curShow = NBAccess`NBCellGetTaggingRule[nb2, idx,
+                    $iDocTagShowTranslation];
+                  If[TrueQ[curShow] && curMode === "paragraph",
+                    iDocWriteAndTrack[nb2, idx, StringTrim[response]]]];
+                NBAccess`NBCellSetTaggingRule[nb2, idx,
+                  {$iDocTagRoot, "syncTag"}, Inherited];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync complete"]];
+                Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> fb]],
+
+      (* ==================== Case 2: アイデア編集 → パラグラフ再生成 (+連鎖翻訳) ==================== *)
+      (* 切替前: mode="idea" & showTrans=False (プロンプト表示中に編集) *)
+      prevMode === "idea" && !TrueQ[prevShowTrans],
+        ideaText = editedText;
+        (* DocToggleView の通常トグルで、alternate タグは編集済みidea(= ideaText) に
+           上書きされ、表示テキストが旧paragraphに差し替わる。
+           したがって paragraph は切替後の表示テキスト (NBCellGetText) から取得する。 *)
+        paragraph = NBAccess`NBCellGetText[nb, cellIdx];
+        translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+        If[!StringQ[paragraph], paragraph = ""];
+        prompt = If[StringTrim[paragraph] =!= "",
+          iDocReExpandPromptFn[ideaText, paragraph, context],
+          iDocExpandPromptFn[ideaText, context]];
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["同期中: パラグラフ生成...", "Syncing: generating paragraph..."]];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, origIdx = cellIdx, idea = ideaText, ctx = context,
+              stag = syncTag, fb = useFb, ss = savedScroll,
+              hasTranslation = StringQ[translation] && StringTrim[translation] =!= "",
+              oldTranslation = If[StringQ[translation], translation, ""]},
+          NBAccess`$NBLLMQueryFunc[prompt,
+            Function[response,
+              Module[{idx, newPara, curMode, curShow},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                idx = iDocFindSyncTag[nb2, stag];
+                If[idx === 0, idx = origIdx];
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  newPara = StringTrim[response];
+                  (* 切替後の状態に応じて保存先を判定:
+                     - mode="idea": alternate=paragraph なので newPara を保存
+                     - mode="paragraph": alternate=idea なので alternate には触らず
+                       表示テキストを newPara に更新 *)
+                  curMode = NBAccess`NBCellGetTaggingRule[nb2, idx, $iDocTagMode];
+                  curShow = NBAccess`NBCellGetTaggingRule[nb2, idx,
+                    $iDocTagShowTranslation];
+                  Which[
+                    curMode === "idea" && !TrueQ[curShow],
+                      NBAccess`NBCellSetTaggingRule[nb2, idx,
+                        $iDocTagAlternate, newPara],
+                    curMode === "paragraph" && !TrueQ[curShow],
+                      iDocWriteAndTrack[nb2, idx, newPara],
+                    curMode === "paragraph" && TrueQ[curShow],
+                      (* 翻訳表示中: translationSrcを更新、表示は翻訳のまま *)
+                      NBAccess`NBCellSetTaggingRule[nb2, idx,
+                        $iDocTagTranslationSrc, newPara]
+                  ];
+                  If[hasTranslation,
+                    (* 翻訳を連鎖更新 *)
+                    Quiet[CurrentValue[nb2, WindowStatusArea] =
+                      iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
+                    Module[{tl = iDocTranslationTargetForText[newPara], tPrompt},
+                      tPrompt = iDocReTranslatePromptFn[
+                        newPara, tl, oldTranslation, idea, ctx];
+                      NBAccess`$NBLLMQueryFunc[tPrompt,
+                        Function[tResponse,
+                          Module[{idx2, cMode, cShow},
+                            NBAccess`NBInvalidateCellsCache[nb2];
+                            idx2 = iDocFindSyncTag[nb2, stag];
+                            If[idx2 === 0, idx2 = origIdx];
+                            If[StringQ[tResponse] && !StringStartsQ[tResponse, "Error"] &&
+                               !StringStartsQ[tResponse, "[ERROR]"],
+                              NBAccess`NBCellSetTaggingRule[nb2, idx2,
+                                $iDocTagTranslation, StringTrim[tResponse]];
+                              NBAccess`NBCellSetTaggingRule[nb2, idx2,
+                                $iDocTagTranslationSrc, newPara];
+                              cMode = NBAccess`NBCellGetTaggingRule[nb2, idx2, $iDocTagMode];
+                              cShow = NBAccess`NBCellGetTaggingRule[nb2, idx2,
+                                $iDocTagShowTranslation];
+                              If[TrueQ[cShow] && cMode === "paragraph",
+                                iDocWriteAndTrack[nb2, idx2, StringTrim[tResponse]]]];
+                            NBAccess`NBCellSetTaggingRule[nb2, idx2,
+                              {$iDocTagRoot, "syncTag"}, Inherited];
+                            Quiet[CurrentValue[nb2, WindowStatusArea] =
+                              iL["同期完了", "Sync complete"]];
+                            Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                            RunScheduledTask[With[{pNb = nb2},
+                              Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+                        nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, idx],
+                        Fallback -> fb]],
+                    (* 翻訳なし → 完了 *)
+                    NBAccess`NBCellSetTaggingRule[nb2, idx,
+                      {$iDocTagRoot, "syncTag"}, Inherited];
+                    Quiet[CurrentValue[nb2, WindowStatusArea] =
+                      iL["同期完了", "Sync complete"]];
+                    Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                    RunScheduledTask[With[{pNb = nb2},
+                      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    {$iDocTagRoot, "syncTag"}, Inherited];
+                  Quiet[CurrentValue[nb2, WindowStatusArea] =
+                    iL["同期エラー", "Sync error"]];
+                  Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                  RunScheduledTask[With[{pNb = nb2},
+                    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> fb]],
+
+      (* ==================== Case 3: 翻訳表示中に編集 → 元パラグラフ逆更新 ==================== *)
+      (* 切替前: showTrans=True (翻訳表示中に編集)
+         mode は "paragraph"(paragraph⇄translation切替) または "translated"(translatedセル) *)
+      TrueQ[prevShowTrans],
+        translation = editedText;
+        paragraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslationSrc];
+        ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate];
+        If[!StringQ[paragraph] || StringTrim[paragraph] === "",
+          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+            {$iDocTagRoot, "syncTag"}, Inherited];
+          Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+          Return[]];
+        If[!StringQ[ideaText], ideaText = ""];
+        (* 編集済み翻訳は DocToggleView 側で translation タグに保存済み。
+           ここでは元パラグラフ(translationSrc)を逆更新する *)
+        prompt = iDocReverseSyncPromptFn[translation, paragraph,
+          ideaText, iDocOutputLanguage[], context];
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["同期中: パラグラフ更新...", "Syncing: updating paragraph..."]];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, origIdx = cellIdx, stag = syncTag, ss = savedScroll,
+              fb = useFb},
+          NBAccess`$NBLLMQueryFunc[prompt,
+            Function[response,
+              Module[{idx, newPara, curMode, curShow},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                idx = iDocFindSyncTag[nb2, stag];
+                If[idx === 0, idx = origIdx];
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  newPara = StringTrim[response];
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagTranslationSrc, newPara];
+                  curMode = NBAccess`NBCellGetTaggingRule[nb2, idx, $iDocTagMode];
+                  curShow = NBAccess`NBCellGetTaggingRule[nb2, idx,
+                    $iDocTagShowTranslation];
+                  (* 切替後の状態に応じた反映:
+                     - paragraph/translated で元テキスト表示中 → 表示を新paragraphに
+                     - idea 表示中 (翻訳→アイデア経路の切替で mode=idea になった場合):
+                       DocToggleView L836-L843 が alternate = translationSrc を設定して
+                       あるので、alternate も新paragraphで同期する *)
+                  Which[
+                    curMode === "paragraph" && !TrueQ[curShow],
+                      iDocWriteAndTrack[nb2, idx, newPara],
+                    curMode === "translated" && !TrueQ[curShow],
+                      iDocWriteAndTrack[nb2, idx, newPara],
+                    curMode === "idea" && !TrueQ[curShow],
+                      NBAccess`NBCellSetTaggingRule[nb2, idx,
+                        $iDocTagAlternate, newPara]
+                  ]];
+                NBAccess`NBCellSetTaggingRule[nb2, idx,
+                  {$iDocTagRoot, "syncTag"}, Inherited];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync complete"]];
+                Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> fb]],
+
+      (* ==================== Case 4: translated セル元テキスト編集 → 翻訳更新 ==================== *)
+      (* 切替前: mode="translated" & showTrans=False (元テキスト表示中に編集) *)
+      prevMode === "translated" && !TrueQ[prevShowTrans],
+        paragraph = editedText;
+        translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+        If[!StringQ[translation] || StringTrim[translation] === "",
+          NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+            {$iDocTagRoot, "syncTag"}, Inherited];
+          Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+          Return[]];
+        targetLang = iDocTranslationTargetForText[paragraph];
+        prompt = iDocReTranslatePromptFn[paragraph, targetLang,
+          translation, "", context];
+        Quiet[CurrentValue[nb, WindowStatusArea] =
+          iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph,
+              stag = syncTag, ss = savedScroll, fb = useFb},
+          NBAccess`$NBLLMQueryFunc[prompt,
+            Function[response,
+              Module[{idx, curMode, curShow},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                idx = iDocFindSyncTag[nb2, stag];
+                If[idx === 0, idx = origIdx];
+                If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+                   !StringStartsQ[response, "[ERROR]"],
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagTranslation, StringTrim[response]];
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagTranslationSrc, srcPara];
+                  curMode = NBAccess`NBCellGetTaggingRule[nb2, idx, $iDocTagMode];
+                  curShow = NBAccess`NBCellGetTaggingRule[nb2, idx,
+                    $iDocTagShowTranslation];
+                  If[curMode === "translated" && TrueQ[curShow],
+                    iDocWriteAndTrack[nb2, idx, StringTrim[response]]]];
+                NBAccess`NBCellSetTaggingRule[nb2, idx,
+                  {$iDocTagRoot, "syncTag"}, Inherited];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["同期完了", "Sync complete"]];
+                Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> fb]],
+
+      (* その他: 同期対象なし *)
+      True,
+        NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+          {$iDocTagRoot, "syncTag"}, Inherited];
+        Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]]
     ];
   ];
 
@@ -1910,11 +2236,16 @@ iDocExprToText[{}] := "";
 iDocExprToText[list_List] := StringJoin[iDocExprToText /@ list];
 iDocExprToText[_] := "";
 
-(* テキストを比率で分割（文の区切りを優先的に探す） *)
+(* テキストを比率で分割（文の区切りを優先的に探す）
+   短いテキスト（プロンプト等）では比率分割が意味不明なフラグメントを
+   生む傾向があるため、閾値以下では両方に全体を保持する。 *)
 iDocProportionalSplit[text_String, ratio_?NumberQ] :=
   Module[{len, pos, candidates, range, filtered, bestPos},
     len = StringLength[text];
     If[len === 0, Return[{"", ""}]];
+    (* 短いテキストは分割せず両方に同じ値を保持。LLM分割が失敗したときの
+       フォールバックとして、意味のない断片よりも全体を保持する方が扱いやすい *)
+    If[len < 30, Return[{text, text}]];
     pos = Max[1, Min[len, Round[len * ratio]]];
     candidates = StringPosition[text,
       RegularExpression["[\:3002\:ff0e.!?\:ff01\:ff1f\\n]"]];
@@ -1941,19 +2272,70 @@ iDocResolveCursorCell[] :=
     If[Length[pos] > 0, {nb, First[pos]}, iDocResolveTargetCell[]]
   ];
 
+(* LLMからの分割応答 ([FRONT]...[BACK]...) を頑強に解析する。
+   - preamble や後続コメントを無視して、タグ直後の本文のみ抽出
+   - 片方が空なら片方だけフォールバック（両方フォールバックよりキメ細かい）
+   - StringSplit では区切り文字前後の扱いが脆いので StringCases を使う *)
+iDocParseSplitResponse[response_String,
+    fallbackFront_String, fallbackBack_String] :=
+  Module[{frontMatches, backMatches, frontText, backText},
+    (* [FRONT] 直後 ～ 次の [BACK] or [FRONT] or 末尾 *)
+    frontMatches = StringCases[response,
+      Shortest["[FRONT]" ~~ inner___ ~~
+        (EndOfString | "[BACK]" | "[FRONT]")] :> inner, 1];
+    (* [BACK] 直後 ～ 次の [FRONT] or [BACK] or 末尾 *)
+    backMatches = StringCases[response,
+      Shortest["[BACK]" ~~ inner___ ~~
+        (EndOfString | "[FRONT]" | "[BACK]")] :> inner, 1];
+    frontText = If[Length[frontMatches] > 0,
+      StringTrim[First[frontMatches]], ""];
+    backText = If[Length[backMatches] > 0,
+      StringTrim[First[backMatches]], ""];
+    If[StringLength[frontText] === 0, frontText = fallbackFront];
+    If[StringLength[backText] === 0, backText = fallbackBack];
+    {frontText, backText}
+  ];
+
 (* プロンプト分割用LLMプロンプト *)
 iDocSplitPromptFn[originalPrompt_String, frontPara_String, backPara_String] :=
   "A paragraph was generated from the 'Original prompt' below, " <>
   "then split into two halves.\n" <>
   "Generate two brief idea/prompt phrases — one for each half.\n" <>
   "Rules:\n" <>
-  "- Respect the style and intent of the original prompt\n" <>
+  "- Each prompt should be a BRIEF phrase, similar in length and style to " <>
+    "the original prompt\n" <>
+  "- Write each prompt in the SAME language as the original prompt\n" <>
+  "- CRITICAL: BOTH [FRONT] and [BACK] sections MUST contain non-empty text. " <>
+    "Never leave the [BACK] section empty — always generate a meaningful " <>
+    "prompt for the back half even if the content is short\n" <>
   "- Each prompt should capture what its half discusses\n" <>
-  "- CRITICAL: Output ONLY in this exact format, nothing else:\n" <>
+  "- Respect the style and intent of the original prompt\n" <>
+  "- Output ONLY in this exact format, no preamble, no postamble:\n" <>
   "[FRONT]\n<prompt for front half>\n[BACK]\n<prompt for back half>\n\n" <>
   "Original prompt:\n" <> originalPrompt <>
   "\n\nFront half:\n" <> frontPara <>
   "\n\nBack half:\n" <> backPara;
+
+(* 翻訳分割用LLMプロンプト:
+   reference (paragraph や idea など) が前後に分割されているのに合わせて、
+   翻訳も同じ境界で前後に分割する。 *)
+iDocSplitTranslationPromptFn[translation_String,
+    refFront_String, refBack_String] :=
+  "A translated text corresponds to source content that has been split into " <>
+  "two halves. Split the translation at the same boundary so that each half " <>
+  "of the translation aligns in meaning with the corresponding half of the " <>
+  "source reference.\n" <>
+  "Rules:\n" <>
+  "- Preserve the full meaning and style of the translation\n" <>
+  "- Do not paraphrase or alter wording beyond what's needed for a clean split\n" <>
+  "- Each translation half must correspond to its same-position reference half\n" <>
+  "- CRITICAL: BOTH [FRONT] and [BACK] sections MUST contain non-empty text. " <>
+    "Never leave the [BACK] section empty\n" <>
+  "- Output ONLY in this exact format, no preamble, no postamble:\n" <>
+  "[FRONT]\n<front half of translation>\n[BACK]\n<back half of translation>\n\n" <>
+  "Reference front half:\n" <> refFront <>
+  "\n\nReference back half:\n" <> refBack <>
+  "\n\nTranslation to split:\n" <> translation;
 
 (* セルの視覚スタイルをモードに応じて設定する *)
 iDocApplyModeStyle[nb_, cellIdx_, mode_, showTrans_] :=
@@ -1994,7 +2376,11 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
           splitRatio, allCells, alternate, translation, translationSrc,
           frontAlt, backAlt, frontTrans, backTrans, frontTransSrc, backTransSrc,
           newCellIdx, privLevel, useFallback,
-          marker, markedText, markerPos},
+          marker, markedText, markerPos,
+          refFrontForAlt, refBackForAlt,
+          refFrontForTrans, refBackForTrans,
+          needSplitAlt, needSplitTrans,
+          backCleanMode},
 
     If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
     NBAccess`NBInvalidateCellsCache[nb];
@@ -2040,7 +2426,7 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
     privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
     useFallback = ClaudeCode`GetPaletteFallback[];
 
-    (* 保存データを比率で分割 *)
+    (* 保存データを比率で分割（LLM完了前のフォールバックとして使う） *)
     {frontAlt, backAlt} = If[StringQ[alternate] && StringLength[alternate] > 0,
       iDocProportionalSplit[alternate, splitRatio], {"", ""}];
     {frontTrans, backTrans} = If[StringQ[translation] &&
@@ -2050,9 +2436,22 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
         StringLength[translationSrc] > 0,
       iDocProportionalSplit[translationSrc, splitRatio], {"", ""}];
 
-    (* --- 前半セル (現在のセル) を更新 --- *)
+    (* 現在表示中テキストと一致するレイヤーは、正確分割 (frontText/backText) で上書き。
+       比率分割よりも正確なので常に優先する。 *)
+    If[TrueQ[showTrans],
+      (* 翻訳表示中: 表示テキスト = 翻訳 *)
+      frontTrans = frontText; backTrans = backText;
+      ,
+      Which[
+        (mode === "paragraph" || mode === "translated") &&
+          StringQ[translationSrc] && StringLength[translationSrc] > 0,
+          (* パラグラフ/元テキスト表示中 & 翻訳元がある: 表示テキスト = 翻訳元パラグラフ *)
+          frontTransSrc = frontText; backTransSrc = backText
+      ]];
+
+    (* --- 前半セル (現在のセル) を更新: iDocWriteAndTrack で編集追跡も更新 --- *)
     NBAccess`NBInvalidateCellsCache[nb];
-    NBAccess`NBCellWriteText[nb, cellIdx, frontText];
+    iDocWriteAndTrack[nb, cellIdx, frontText];
     If[frontTrans =!= "",
       NBAccess`NBCellSetTaggingRule[nb, cellIdx,
         $iDocTagTranslation, frontTrans]];
@@ -2082,10 +2481,17 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
           $iDocTagTranslationSrc, backTransSrc]];
       If[TrueQ[showTrans],
         NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
-          $iDocTagShowTranslation, True]]];
+          $iDocTagShowTranslation, True]];
+      (* 後半セルの編集追跡タグを設定: 
+         NotebookWrite で直接挿入したため iDocWriteAndTrack を経由していない *)
+      NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+        $iDocTagCleanText, backText];
+      backCleanMode = ToString[mode] <> ":" <> ToString[TrueQ[showTrans]];
+      NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
+        $iDocTagCleanMode, backCleanMode]];
 
-    (* --- プロンプト処理 --- *)
-    (* まず比率分割のプロンプトを即座に設定（LLM完了前のトグル安全性確保） *)
+    (* --- プロンプト(alternate)処理: 比率分割をまず即座に設定 --- *)
+    (* alternate はLLM完了前のトグル安全性のため、事前に比率分割で保存しておく *)
     If[frontAlt =!= "",
       NBAccess`NBCellSetTaggingRule[nb, cellIdx,
         $iDocTagAlternate, frontAlt]];
@@ -2093,56 +2499,99 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
       NBAccess`NBCellSetTaggingRule[nb, newCellIdx,
         $iDocTagAlternate, backAlt]];
 
-    Which[
-      (* パラグラフ or 翻訳表示中 + プロンプトあり → LLMで分割（非同期で上書き） *)
-      (mode === "paragraph" || TrueQ[showTrans]) &&
-          StringQ[alternate] && StringLength[alternate] > 0,
-        Module[{displayedFront = frontText, displayedBack = backText,
-                prompt},
-          (* 翻訳表示中なら翻訳元パラグラフを使う *)
-          If[TrueQ[showTrans] && StringQ[translationSrc],
-            displayedFront = frontTransSrc;
-            displayedBack = backTransSrc];
-          prompt = iDocSplitPromptFn[alternate, displayedFront, displayedBack];
-          iDocSetJobAnchorCell[nb, cellIdx];
-          With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
-                fAlt = frontAlt, bAlt = backAlt},
-            NBAccess`$NBLLMQueryFunc[prompt,
-              Function[response,
-                Module[{parts, fp, bp, curMode1, curMode2},
-                  NBAccess`NBInvalidateCellsCache[nb2];
-                  If[StringQ[response] && StringContainsQ[response, "[FRONT]"] &&
-                     StringContainsQ[response, "[BACK]"],
-                    parts = StringSplit[response, {"[FRONT]", "[BACK]"}];
-                    parts = StringTrim /@ Select[parts, StringLength[#] > 0 &];
-                    If[Length[parts] >= 2,
-                      fp = parts[[1]]; bp = parts[[2]],
-                      fp = fAlt; bp = bAlt],
-                    fp = fAlt; bp = bAlt];
-                  (* モードに応じて適切な場所に保存 *)
-                  curMode1 = NBAccess`NBCellGetTaggingRule[nb2, ci1, $iDocTagMode];
-                  If[curMode1 === "paragraph" || curMode1 === "translated",
-                    (* パラグラフ表示中: alternate がプロンプト格納場所 *)
-                    NBAccess`NBCellSetTaggingRule[nb2, ci1,
-                      $iDocTagAlternate, fp],
-                    If[curMode1 === "idea",
-                      (* プロンプト表示中: テキストがプロンプト、alternate がパラグラフ *)
-                      NBAccess`NBInvalidateCellsCache[nb2];
-                      NBAccess`NBCellWriteText[nb2, ci1, fp]]];
-                  curMode2 = NBAccess`NBCellGetTaggingRule[nb2, ci2, $iDocTagMode];
-                  If[curMode2 === "paragraph" || curMode2 === "translated",
-                    NBAccess`NBCellSetTaggingRule[nb2, ci2,
-                      $iDocTagAlternate, bp],
-                    If[curMode2 === "idea",
-                      NBAccess`NBInvalidateCellsCache[nb2];
-                      NBAccess`NBCellWriteText[nb2, ci2, bp]]];
-                  Quiet[CurrentValue[nb2, WindowStatusArea] =
-                    iL["プロンプト分割完了", "Prompt split done"]];
-                  RunScheduledTask[With[{pNb = nb2},
-                    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
-              nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]],
+    (* --- LLM分割のための参考テキストを選択 --- *)
+    (* alternate の LLM分割参考:
+       showTrans=True の場合は翻訳元パラグラフの分割 (frontTransSrc/backTransSrc)、
+       それ以外は現在表示中の分割 (frontText/backText) を使う。 *)
+    If[TrueQ[showTrans] && StringQ[translationSrc] &&
+        StringLength[translationSrc] > 0,
+      refFrontForAlt = frontTransSrc; refBackForAlt = backTransSrc,
+      refFrontForAlt = frontText; refBackForAlt = backText];
 
-      True, Null];
+    (* translation の LLM分割参考:
+       showTrans=True の場合は、frontText/backText が既に翻訳の正確分割なので
+       LLM分割は不要。それ以外は現在表示中分割 (frontText/backText) を使う。 *)
+    refFrontForTrans = frontText;
+    refBackForTrans = backText;
+
+    needSplitAlt = StringQ[alternate] && StringLength[alternate] > 0;
+    needSplitTrans = StringQ[translation] && StringLength[translation] > 0 &&
+        !TrueQ[showTrans];
+
+    (* --- 非同期 LLM 分割: alternate (プロンプト or パラグラフ) --- *)
+    If[needSplitAlt,
+      Module[{promptAlt},
+        promptAlt = iDocSplitPromptFn[alternate, refFrontForAlt, refBackForAlt];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
+              fAlt = frontAlt, bAlt = backAlt},
+          NBAccess`$NBLLMQueryFunc[promptAlt,
+            Function[response,
+              Module[{fp, bp, curMode1, curMode2, curShow1, curShow2, parsed},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                If[StringQ[response],
+                  parsed = iDocParseSplitResponse[response, fAlt, bAlt];
+                  fp = parsed[[1]]; bp = parsed[[2]],
+                  fp = fAlt; bp = bAlt];
+                (* 各セルの現在モードを確認して適切な場所に保存 *)
+                curMode1 = NBAccess`NBCellGetTaggingRule[nb2, ci1, $iDocTagMode];
+                curShow1 = NBAccess`NBCellGetTaggingRule[nb2, ci1,
+                  $iDocTagShowTranslation];
+                curMode2 = NBAccess`NBCellGetTaggingRule[nb2, ci2, $iDocTagMode];
+                curShow2 = NBAccess`NBCellGetTaggingRule[nb2, ci2,
+                  $iDocTagShowTranslation];
+                (* alternate タグは常に更新（セルがどのモードにあっても保持される値） *)
+                NBAccess`NBCellSetTaggingRule[nb2, ci1, $iDocTagAlternate, fp];
+                NBAccess`NBCellSetTaggingRule[nb2, ci2, $iDocTagAlternate, bp];
+                (* プロンプト(idea)モードでは表示テキストが alternate の内容そのもの。
+                   その場合は表示も更新する必要がある。 *)
+                If[curMode1 === "idea" && !TrueQ[curShow1],
+                  iDocWriteAndTrack[nb2, ci1, fp]];
+                If[curMode2 === "idea" && !TrueQ[curShow2],
+                  iDocWriteAndTrack[nb2, ci2, bp]];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["プロンプト分割完了", "Prompt split done"]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]]];
+
+    (* --- 非同期 LLM 分割: translation --- *)
+    If[needSplitTrans,
+      Module[{promptTrans},
+        promptTrans = iDocSplitTranslationPromptFn[translation,
+          refFrontForTrans, refBackForTrans];
+        iDocSetJobAnchorCell[nb, cellIdx];
+        With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
+              fTrans = frontTrans, bTrans = backTrans},
+          NBAccess`$NBLLMQueryFunc[promptTrans,
+            Function[response,
+              Module[{fp, bp, cMode1, cShow1, cMode2, cShow2, parsed},
+                NBAccess`NBInvalidateCellsCache[nb2];
+                If[StringQ[response],
+                  parsed = iDocParseSplitResponse[response, fTrans, bTrans];
+                  fp = parsed[[1]]; bp = parsed[[2]],
+                  fp = fTrans; bp = bTrans];
+                NBAccess`NBCellSetTaggingRule[nb2, ci1, $iDocTagTranslation, fp];
+                NBAccess`NBCellSetTaggingRule[nb2, ci2, $iDocTagTranslation, bp];
+                (* 翻訳表示中のセル（showTrans=True）があれば、そのセルの
+                   表示テキストも翻訳で更新する。
+                   ただし本分割時点では showTrans=False だったので、通常は不要。
+                   モードが変わっている可能性に備えて念のためチェックする。 *)
+                cMode1 = NBAccess`NBCellGetTaggingRule[nb2, ci1, $iDocTagMode];
+                cShow1 = NBAccess`NBCellGetTaggingRule[nb2, ci1,
+                  $iDocTagShowTranslation];
+                cMode2 = NBAccess`NBCellGetTaggingRule[nb2, ci2, $iDocTagMode];
+                cShow2 = NBAccess`NBCellGetTaggingRule[nb2, ci2,
+                  $iDocTagShowTranslation];
+                If[TrueQ[cShow1] && (cMode1 === "paragraph" || cMode1 === "translated"),
+                  iDocWriteAndTrack[nb2, ci1, fp]];
+                If[TrueQ[cShow2] && (cMode2 === "paragraph" || cMode2 === "translated"),
+                  iDocWriteAndTrack[nb2, ci2, bp]];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["翻訳分割完了", "Translation split done"]];
+                RunScheduledTask[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
+            nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]]];
 
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["セルを分割しました。", "Cell split."]];
@@ -2403,7 +2852,7 @@ DocInsertDictionary[nb_NotebookObject] :=
   Module[{dictCell, hasDictStyle, defaultContent},
     defaultContent = "{{<<Japanese>>, <<English>>, <<Context>>}, " <>
       "{\"状相\", \"configuration\", \"セルオートマトン\"}, " <>
-      "{\"universality\", \"万能性\", \"計算モデル\"}}";
+      "{\"万能性\", \"universality\", \"計算モデル\"}}";
     hasDictStyle = Quiet[
       MemberQ[
         Cases[
