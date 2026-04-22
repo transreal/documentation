@@ -256,6 +256,10 @@ ShowDocPalette[]
 
 ## 使用例・デモ
 
+### コミュニティ記事
+
+- [Wolfram Community — documentation パッケージ紹介記事](https://community.wolfram.com/groups/-/m/t/3674507) — Wolfram Community に投稿された本パッケージの解説・デモ記事です。
+
 ### パレットを開く
 
 ```mathematica
