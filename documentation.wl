@@ -112,6 +112,16 @@ DocMergeCells::usage =
   "テキスト・プロンプト・翻訳をそれぞれ結合し、最初のセルに統合する。\n" <>
   "モード・スタイルは最初のセルを維持する。";
 
+DocSyncAll::usage =
+  "DocSyncAll[nb] はノートブック内の全 paragraph/idea セルを、\n" <>
+  "現在の指示(Directive)・辞書(Dictionary)・プロンプトに従って一括で\n" <>
+  "再生成する。翻訳があれば連鎖的に翻訳も更新する。\n" <>
+  "指示/辞書セルの最終更新時刻より後に編集された対象セルは\n" <>
+  "「既に最新」と判断してスキップする（高速化）。\n" <>
+  "確認ダイアログで実行前に警告を表示する。処理は非同期で進行し、\n" <>
+  "フロントエンドをブロックしない。\n" <>
+  "Options: Fallback -> False";
+
 $DocTranslationLanguage::usage =
   "$DocTranslationLanguage は翻訳先の言語名。\n" <>
   "デフォルト: $Language が英語以外なら \"English\"、英語なら \"Japanese\"。\n" <>
@@ -122,6 +132,7 @@ $DocTranslationLanguage::usage =
 Options[DocExpandIdea] = {Fallback -> False};
 Options[DocTranslate] = {Fallback -> False};
 Options[DocSync] = {Fallback -> False};
+Options[DocSyncAll] = {Fallback -> False};
 Options[DocExportMarkdown] = {"MathFormat" -> False};
 Options[DocExportLaTeX] = {"MathFormat" -> False};
 Options[DocExportWord] = {"ReferenceDoc" -> None, "MathFormat" -> False};
@@ -382,20 +393,71 @@ iDocCollectDictionary[nb_NotebookObject] :=
   ];
 
 (* ノートブック内の Directive セルから指示を収集する。
+   複数の Directive セルがある場合はすべてマージし、
+   LLM が各指示を等しく重要と認識できるよう番号付きで提示する。
    展開・翻訳・同期時に LLM が遵守すべき指示。 *)
 iDocCollectDirectives[nb_NotebookObject] :=
-  Module[{nCells, text, directives = {}},
+  Module[{nCells, text, directives = {}, n, body},
     nCells = NBAccess`NBCellCount[nb];
     Do[
       If[iDocIsDirectiveCell[nb, i],
         text = Quiet[NBAccess`NBCellGetText[nb, i]];
-        If[StringQ[text] && StringLength[text] > 0,
-          AppendTo[directives, text]]],
+        If[StringQ[text] && StringLength[StringTrim[text]] > 0,
+          AppendTo[directives, StringTrim[text]]]],
     {i, nCells}];
-    If[Length[directives] === 0, "",
-      "=== Directives (MUST follow these instructions strictly) ===\n" <>
-      StringRiffle[directives, "\n---\n"] <>
-      "\n=== End Directives ===\n\n"]
+    n = Length[directives];
+    If[n === 0, Return[""]];
+    (* 複数ある場合は番号付き、1つなら番号なしで提示 *)
+    body = If[n === 1,
+      First[directives],
+      StringRiffle[
+        MapIndexed[
+          "[Directive " <> ToString[First[#2]] <> "]\n" <> #1 &,
+          directives],
+        "\n\n"]];
+    "=== Directives (" <> ToString[n] <> " instruction" <>
+      If[n === 1, "", "s"] <> ", MUST follow " <>
+      If[n === 1, "strictly", "ALL strictly"] <> ") ===\n" <>
+    "These directives apply to ALL content in this document (paragraphs, " <>
+    "translations, etc.). If the current content violates " <>
+    If[n === 1, "this directive", "ANY of these directives"] <>
+    ", it MUST be corrected — even if no other change is " <>
+    "requested. Do NOT preserve existing text that violates the directives.\n\n" <>
+    body <>
+    "\n=== End Directives ===\n\n"
+  ];
+
+(* ------------------------------------------------------------
+   セルの最終変更時刻取得ヘルパー（一括同期のスキップ判定用）
+   ------------------------------------------------------------ *)
+
+(* 指定セルの最終変更時刻 (AbsoluteTime 秒単位)。
+   取得できなかった場合は 0 を返す（= 最も古い扱い）。 *)
+iDocCellLastModified[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{cells, cellObj, times, flat},
+    cells = Quiet[Cells[nb]];
+    If[!ListQ[cells] || cellIdx < 1 || cellIdx > Length[cells],
+      Return[0.]];
+    cellObj = cells[[cellIdx]];
+    times = Quiet[CurrentValue[cellObj, CellChangeTimes]];
+    (* CellChangeTimes は {t1, t2, ...} もしくは {{t1a, t1b}, ...} 形式 *)
+    If[!ListQ[times] || Length[times] === 0, Return[0.]];
+    flat = Cases[Flatten[{times}], _?NumericQ];
+    If[Length[flat] === 0, 0., Max[flat]]
+  ];
+
+(* 指示系セル (Directive / Dictionary) の最終変更時刻の最大値。
+   これらのセルが更新された時刻を「指示の最終更新時刻」として扱う。
+   この時刻より後に編集された対象セルは、既に最新として一括同期をスキップする。 *)
+iDocInstructionsLastModified[nb_NotebookObject] :=
+  Module[{nCells, maxTime = 0., t},
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[iDocIsDirectiveCell[nb, i] || iDocIsDictionaryCell[nb, i],
+        t = iDocCellLastModified[nb, i];
+        If[NumericQ[t] && t > maxTime, maxTime = t]],
+      {i, nCells}];
+    maxTime
   ];
 
 (* Directive セルからエクスポート用のスタイル読み替え規則を解析する。
@@ -476,8 +538,17 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
   iL[
     "あなたは熟練したライターです。以下の「修正されたアイデア」に基づいて、" <>
     "「以前の段落」を書き直してください。\n" <>
-    "ルール:\n" <>
-    "- 以前の段落の文体・構成・ユーザーの修正を可能な限り踏襲する\n" <>
+    "ルール（優先度の高い順）:\n" <>
+    "- 【最優先】Directives（指示）が提供されている場合は、その内容を厳守する。" <>
+    "**現在の段落が Directives に違反している場合は必ず修正すること** " <>
+    "（他に変更指示がなくても修正する）。" <>
+    "例: Directives で「ですます調で書く」と指定され、現在の段落が「である調」の場合、" <>
+    "段落全体を「ですます調」に書き換える。" <>
+    "Directives が文体・トーン・話し方（例: ですます調、である調、敬語等）・" <>
+    "表記規則を指定している場合は、以前の段落の文体を破棄して Directives の指定に合わせる\n" <>
+    "- Dictionary（辞書）が提供されている場合は、用語対応を必ず使用する\n" <>
+    "- Directives で指定されていない範囲では、以前の段落の構成・段落の組み立て・" <>
+    "ユーザーの個別編集を可能な限り踏襲する\n" <>
     "- 修正されたアイデアの内容変更に従って必要箇所を書き換える\n" <>
     "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
     "- 【最重要】段落の本文テキストのみを出力すること。" <>
@@ -485,8 +556,6 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "出力の最初の文字から最後の文字まですべてが段落の本文でなければならない\n" <>
     "- マークダウン記法は使わない\n" <>
     "- ドキュメントコンテキストがある場合は、略語や固有名詞の意味を文脈から判断する\n" <>
-    "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
-    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
     "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
     "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
     "資料を読む過程は絶対に出力に含めない\n" <>
@@ -495,8 +564,17 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "\n\n以前の段落:\n" <> prevParagraph,
     "You are a skilled writer. Revise the 'Previous paragraph' based on " <>
     "the 'Updated idea' below.\n" <>
-    "Rules:\n" <>
-    "- Preserve the style, structure, and user edits of the previous paragraph as much as possible\n" <>
+    "Rules (in priority order):\n" <>
+    "- [HIGHEST PRIORITY] If Directives are provided, strictly follow them. " <>
+    "**If the previous paragraph violates the Directives, you MUST correct it** " <>
+    "(even if no other change is requested). " <>
+    "Example: if Directives say 'use polite form' and the paragraph uses plain form, " <>
+    "rewrite the entire paragraph in polite form. " <>
+    "If Directives specify a style, tone, voice, register (e.g. polite/plain form), " <>
+    "or writing convention, DISCARD the previous paragraph's style and conform to the Directives\n" <>
+    "- If a Dictionary is provided, always use the specified term mappings\n" <>
+    "- For aspects NOT specified by Directives, preserve the structure, " <>
+    "paragraph organization, and individual user edits of the previous paragraph as much as possible\n" <>
     "- Update only the parts that need to change according to the updated idea\n" <>
     "- Output language: " <> iDocOutputLanguage[] <> "\n" <>
     "- CRITICAL: Output ONLY the paragraph body text. " <>
@@ -505,8 +583,6 @@ iDocReExpandPromptFn[ideaText_String, prevParagraph_String, context_String:""] :
     "The very first character of your output must be the start of the paragraph itself\n" <>
     "- Do not use markdown formatting\n" <>
     "- If document context is provided, use it to disambiguate abbreviations and proper nouns\n" <>
-    "- If Directives are provided, strictly follow their instructions\n" <>
-    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
     "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
     "- If attached files are mentioned in context, use their content but NEVER output your reading process\n" <>
     "- If you cannot fulfill the request (file not found, insufficient info, etc.), output ONLY: [ERROR]: followed by the reason\n\n" <>
@@ -521,17 +597,24 @@ iDocUpdateParagraphPromptFn[ideaText_String, currentParagraph_String, context_St
   iL[
     "あなたは熟練したライターです。以下の「現在の段落」を、" <>
     "「プロンプト（アイデア）」の指示に基づいて更新してください。\n" <>
-    "ルール:\n" <>
-    "- 現在の段落の文体・構成・ユーザーの修正を最大限尊重する\n" <>
-    "- プロンプトの内容と、Directives（指示）の内容に従って必要箇所を更新する\n" <>
+    "ルール（優先度の高い順）:\n" <>
+    "- 【最優先】Directives（指示）が提供されている場合は、その内容を厳守する。" <>
+    "**現在の段落が Directives に違反している場合は必ず修正すること** " <>
+    "（他に変更指示がなくても修正する）。" <>
+    "例: Directives で「ですます調で書く」と指定され、現在の段落が「である調」の場合、" <>
+    "段落全体を「ですます調」に書き換える。" <>
+    "Directives が文体・トーン・話し方（例: ですます調、である調、敬語等）・" <>
+    "表記規則を指定している場合は、現在の段落の文体を破棄して Directives の指定に合わせる\n" <>
+    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
+    "- Directives で指定されていない範囲では、現在の段落の構成・段落の組み立て・" <>
+    "ユーザーの個別編集を可能な限り尊重する\n" <>
+    "- プロンプト（アイデア）の内容変更に従って必要箇所を更新する\n" <>
     "- ドキュメントコンテキストや文献情報がある場合は、それに基づいて内容の正確性を向上させる\n" <>
     "- 出力言語: " <> iDocOutputLanguage[] <> "\n" <>
     "- 【最重要】段落の本文テキストのみを出力すること。" <>
     "「Let me」「まず」「では」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
     "出力の最初の文字から最後の文字まですべてが段落の本文でなければならない\n" <>
     "- マークダウン記法は使わない\n" <>
-    "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
-    "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
     "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
     "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
     "資料を読む過程は絶対に出力に含めない\n" <>
@@ -540,9 +623,18 @@ iDocUpdateParagraphPromptFn[ideaText_String, currentParagraph_String, context_St
     "\n\n現在の段落:\n" <> currentParagraph,
     "You are a skilled writer. Update the 'Current paragraph' below based on " <>
     "the 'Prompt (idea)' and any provided Directives.\n" <>
-    "Rules:\n" <>
-    "- Preserve the style, structure, and user edits of the current paragraph as much as possible\n" <>
-    "- Update content based on the prompt, Directives, and document context\n" <>
+    "Rules (in priority order):\n" <>
+    "- [HIGHEST PRIORITY] If Directives are provided, strictly follow them. " <>
+    "**If the current paragraph violates the Directives, you MUST correct it** " <>
+    "(even if no other change is requested). " <>
+    "Example: if Directives say 'use polite form' and the paragraph uses plain form, " <>
+    "rewrite the entire paragraph in polite form. " <>
+    "If Directives specify a style, tone, voice, register (e.g. polite/plain form), " <>
+    "or writing convention, DISCARD the current paragraph's style and conform to the Directives\n" <>
+    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
+    "- For aspects NOT specified by Directives, preserve the structure, " <>
+    "paragraph organization, and individual user edits of the current paragraph as much as possible\n" <>
+    "- Update content based on the prompt and Directives\n" <>
     "- If references or literature are available in context, use them to improve accuracy\n" <>
     "- Output language: " <> iDocOutputLanguage[] <> "\n" <>
     "- CRITICAL: Output ONLY the paragraph body text. " <>
@@ -550,8 +642,6 @@ iDocUpdateParagraphPromptFn[ideaText_String, currentParagraph_String, context_St
     "such as 'Let me...', 'I will...', 'Here is...', 'Based on...'. " <>
     "The very first character of your output must be the start of the paragraph itself\n" <>
     "- Do not use markdown formatting\n" <>
-    "- If Directives are provided, strictly follow their instructions\n" <>
-    "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
     "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
     "- If attached files are mentioned in context, use their content but NEVER output your reading process\n" <>
     "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason\n\n" <>
@@ -1979,6 +2069,288 @@ iDocTranslateAllChain[nb_, idxs_, pos_, fb_, total_] :=
   ];
 
 (* ============================================================
+   一括同期: 指示/辞書の変更を全セルに反映
+   ----------------------------------------------------------------
+   ノートブック内の全ての paragraph/idea セルを、現在の指示 (Directive)
+   ・辞書 (Dictionary)・コンテキストに従って再生成する。
+   非同期チェーン処理で、フロントエンドをブロックしない。
+   ユーザーは実行中に編集や切替を行ってもよい。
+   ============================================================ *)
+
+(* 対象セル収集: mode=paragraph|idea のセル（メタセルと除外セルはスキップ） *)
+iDocCollectSyncTargets[nb_NotebookObject] :=
+  Module[{nCells, targets = {}, mode},
+    NBAccess`NBInvalidateCellsCache[nb];
+    nCells = NBAccess`NBCellCount[nb];
+    Do[
+      If[!iDocIsMetaCell[nb, i] &&
+         !TrueQ[NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagExcludeExport]],
+        mode = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
+        If[StringQ[mode] && (mode === "paragraph" || mode === "idea"),
+          AppendTo[targets, i]]],
+      {i, nCells}];
+    targets
+  ];
+
+(* 1セルの再同期をコールバックチェーン方式で実行する。
+   LLM 応答が返ったコールバック内で onDone[] を呼んで次セルの処理に進む。
+   これにより「前セルの LLM 完了を待たずに次セル開始」という競合を回避し、
+   RunScheduledTask の遅延評価に依存しない確実な逐次実行を実現する。 *)
+iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
+  Module[{mode, showTrans, currentParagraph, ideaText, translation,
+          context, directives, dictionary, prompt, syncTag, privLevel, hasText},
+    NBAccess`NBInvalidateCellsCache[nb];
+    (* 対象外セルは即座に次へ *)
+    If[cellIdx < 1 || cellIdx > NBAccess`NBCellCount[nb] ||
+       iDocIsMetaCell[nb, cellIdx],
+      onDone[]; Return[]];
+    mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+    showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
+    If[!StringQ[mode] || (mode =!= "paragraph" && mode =!= "idea"),
+      onDone[]; Return[]];
+    (* 翻訳表示中はここで対象外（DocSyncAll 側で事前に paragraph 表示に切替済みのはず） *)
+    If[TrueQ[showTrans], onDone[]; Return[]];
+
+    (* paragraph / idea 両ケースで両方のテキストを取得 *)
+    If[mode === "paragraph",
+      currentParagraph = NBAccess`NBCellGetText[nb, cellIdx];
+      ideaText = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate],
+      (* mode === "idea" *)
+      ideaText = NBAccess`NBCellGetText[nb, cellIdx];
+      currentParagraph = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate]];
+    If[!StringQ[currentParagraph], currentParagraph = ""];
+    If[!StringQ[ideaText], ideaText = ""];
+    translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
+    If[!StringQ[translation], translation = ""];
+
+    hasText = StringTrim[currentParagraph] =!= "" || StringTrim[ideaText] =!= "";
+    If[!hasText, onDone[]; Return[]];
+
+    (* コンテキスト収集 *)
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+
+    (* セルが動いてもインデックスを追跡できるよう syncTag 付与 *)
+    syncTag = "doc-syncall-" <> ToString[UnixTime[]] <> "-" <>
+      ToString[RandomInteger[99999]];
+    NBAccess`NBCellSetTaggingRule[nb, cellIdx,
+      {$iDocTagRoot, "syncTag"}, syncTag];
+
+    (* paragraph 更新プロンプト: 既存段落があればインプレース更新、無ければ新規展開 *)
+    prompt = Which[
+      StringTrim[currentParagraph] =!= "" && StringTrim[ideaText] =!= "",
+        iDocUpdateParagraphPromptFn[ideaText, currentParagraph, context],
+      StringTrim[ideaText] =!= "",
+        iDocExpandPromptFn[ideaText, context],
+      True, (* paragraph のみ、プロンプトなし: 既存段落を Directives に沿って更新 *)
+        iDocUpdateParagraphPromptFn["", currentParagraph, context]];
+
+    iDocSetJobAnchorCell[nb, cellIdx];
+    With[{nb2 = nb, origIdx = cellIdx, idea = ideaText, ctx = context,
+          stag = syncTag, fbb = fb, doneFn = onDone,
+          hasTranslation = StringTrim[translation] =!= "",
+          oldTranslation = translation,
+          pvl = privLevel},
+      NBAccess`$NBLLMQueryFunc[prompt,
+        Function[response,
+          Module[{idx, newPara, curMode, curShow},
+            NBAccess`NBInvalidateCellsCache[nb2];
+            idx = iDocFindSyncTag[nb2, stag];
+            If[idx === 0, idx = origIdx];
+            If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+               !StringStartsQ[response, "[ERROR]"],
+              newPara = StringTrim[response];
+              curMode = NBAccess`NBCellGetTaggingRule[nb2, idx, $iDocTagMode];
+              curShow = NBAccess`NBCellGetTaggingRule[nb2, idx,
+                $iDocTagShowTranslation];
+              (* 現在のモードに応じた保存先 *)
+              Which[
+                curMode === "paragraph" && !TrueQ[curShow],
+                  iDocWriteAndTrack[nb2, idx, newPara],
+                curMode === "idea" && !TrueQ[curShow],
+                  NBAccess`NBCellSetTaggingRule[nb2, idx,
+                    $iDocTagAlternate, newPara]];
+              (* 翻訳元として paragraph を保存 *)
+              NBAccess`NBCellSetTaggingRule[nb2, idx,
+                $iDocTagTranslationSrc, newPara];
+              If[hasTranslation,
+                (* 翻訳連鎖更新 *)
+                Module[{tl = iDocTranslationTargetForText[newPara], tPrompt},
+                  tPrompt = iDocReTranslatePromptFn[newPara, tl,
+                    oldTranslation, idea, ctx];
+                  NBAccess`$NBLLMQueryFunc[tPrompt,
+                    Function[tResponse,
+                      Module[{idx2, cMode, cShow},
+                        NBAccess`NBInvalidateCellsCache[nb2];
+                        idx2 = iDocFindSyncTag[nb2, stag];
+                        If[idx2 === 0, idx2 = origIdx];
+                        If[StringQ[tResponse] && !StringStartsQ[tResponse, "Error"] &&
+                           !StringStartsQ[tResponse, "[ERROR]"],
+                          NBAccess`NBCellSetTaggingRule[nb2, idx2,
+                            $iDocTagTranslation, StringTrim[tResponse]];
+                          cMode = NBAccess`NBCellGetTaggingRule[nb2, idx2, $iDocTagMode];
+                          cShow = NBAccess`NBCellGetTaggingRule[nb2, idx2,
+                            $iDocTagShowTranslation];
+                          If[TrueQ[cShow] && cMode === "paragraph",
+                            iDocWriteAndTrack[nb2, idx2, StringTrim[tResponse]]]];
+                        NBAccess`NBCellSetTaggingRule[nb2, idx2,
+                          {$iDocTagRoot, "syncTag"}, Inherited];
+                        (* 翻訳完了 → 次セルへ *)
+                        doneFn[]]],
+                    nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, idx],
+                    Fallback -> fbb]],
+                (* 翻訳なし: 直接完了 → 次セルへ *)
+                NBAccess`NBCellSetTaggingRule[nb2, idx,
+                  {$iDocTagRoot, "syncTag"}, Inherited];
+                doneFn[]],
+              (* paragraph 更新エラー → タグ解除して次セルへ *)
+              NBAccess`NBCellSetTaggingRule[nb2, idx,
+                {$iDocTagRoot, "syncTag"}, Inherited];
+              doneFn[]]]],
+        nb, PrivacyLevel -> pvl, Fallback -> fbb]];
+  ];
+
+(* コールバックチェーン方式: LLM 応答完了時に次セルを呼ぶ。
+   前セルの LLM 完了を確実に待ち、RunScheduledTask の遅延評価に依存しない。
+   非同期 LLM 呼び出し自体はノンブロッキングなので、フロントエンドも止まらない。 *)
+iDocSyncAllChain[nb_, idxs_, pos_, fb_, total_] :=
+  If[pos > Length[idxs],
+    (* 全完了 *)
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[ToString[total] <> " セルの一括同期完了。",
+         ToString[total] <> " cell(s) synced."]];
+    RunScheduledTask[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}],
+    Module[{cellIdx = idxs[[pos]]},
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["一括同期中: ", "Syncing all: "] <>
+          ToString[pos] <> "/" <> ToString[total]];
+      iDocSyncOneCellAsync[nb, cellIdx, fb,
+        Function[iDocSyncAllChain[nb, idxs, pos + 1, fb, total]]]]
+  ];
+
+(* 公開API: 一括同期を開始 *)
+DocSyncAll[nb_NotebookObject, opts:OptionsPattern[]] :=
+  Module[{useFb, idxs, answer, switchAnswer, hasShowTrans, nShowTrans,
+          instrTime, nSkipped, allIdxs, skipReason},
+    useFb = TrueQ[OptionValue[Fallback]];
+    NBAccess`NBInvalidateCellsCache[nb];
+
+    allIdxs = iDocCollectSyncTargets[nb];
+    If[Length[allIdxs] === 0,
+      MessageDialog[iL[
+        "一括同期できるセルがありません。\n" <>
+          "先にセルを展開（プロンプト→パラグラフ）してください。",
+        "No cells available for sync-all.\n" <>
+          "Expand cells first (idea → paragraph)."]];
+      Return[]];
+
+    (* 指示系セル (Directive / Dictionary) の最終変更時刻を取得。
+       対象セルのうちこの時刻以降に編集されたものは「既に最新」としてスキップする。 *)
+    instrTime = iDocInstructionsLastModified[nb];
+    (* instrTime が 0 → 指示セルがない or タイムスタンプ取得不可 → 全件対象 *)
+    idxs = If[instrTime > 0,
+      Select[allIdxs,
+        iDocCellLastModified[nb, #] <= instrTime &],
+      allIdxs];
+    nSkipped = Length[allIdxs] - Length[idxs];
+
+    If[Length[idxs] === 0,
+      MessageDialog[iL[
+        ToString[Length[allIdxs]] <> " 個のセルは全て、指示/辞書の最終更新より" <>
+          "後に編集されています。\n一括同期する必要のあるセルはありません。",
+        "All " <> ToString[Length[allIdxs]] <> " cells have been edited after " <>
+          "the latest directive/dictionary update.\nNothing to sync."]];
+      Return[]];
+
+    (* 翻訳表示中セルの確認 *)
+    hasShowTrans = AnyTrue[idxs,
+      TrueQ[NBAccess`NBCellGetTaggingRule[nb, #, $iDocTagShowTranslation]] &];
+    nShowTrans = Length[Select[idxs,
+      TrueQ[NBAccess`NBCellGetTaggingRule[nb, #, $iDocTagShowTranslation]] &]];
+
+    (* スキップ情報の説明文 *)
+    skipReason = If[nSkipped > 0,
+      iL[
+        "\n高速化: " <> ToString[nSkipped] <> " 個のセルは、指示/辞書の最終更新より" <>
+          "後に編集されているためスキップします。\n",
+        "\nSpeedup: " <> ToString[nSkipped] <> " cells are skipped because they were " <>
+          "edited after the latest directive/dictionary update.\n"],
+      ""];
+
+    (* 確認ダイアログ: 件数・コスト・時間・翻訳表示中の注意を表示 *)
+    answer = ChoiceDialog[
+      Column[{
+        Style[iL["一括同期", "Sync All"], Bold, 14],
+        Spacer[5],
+        iL[
+          ToString[Length[idxs]] <> " 個のセル (paragraph/idea モード) を、\n" <>
+          "現在の指示・辞書・コンテキストに従って再生成します。" <>
+          If[nSkipped > 0,
+            " (全 " <> ToString[Length[allIdxs]] <> " セル中)",
+            ""] <> "\n\n" <>
+          "・各セルで LLM を呼び出すため、時間と API コストがかかります。\n" <>
+          "・翻訳があるセルでは、翻訳も連鎖的に更新されます。\n" <>
+          "・処理は非同期で進みます。実行中にノートブックを編集・操作可能です。\n" <>
+          "・既存のパラグラフ/翻訳は上書きされます(元に戻せません)。\n" <>
+          skipReason <>
+          If[hasShowTrans,
+            "\n注意: " <> ToString[nShowTrans] <>
+              " 個のセルが翻訳表示中です。\n" <>
+              "これらは実行前にパラグラフ表示に統一されます。\n",
+            ""] <>
+          "\n実行しますか?",
+          ToString[Length[idxs]] <>
+          " cells (paragraph/idea) will be re-generated using the current\n" <>
+          "directives, dictionary, and context." <>
+          If[nSkipped > 0,
+            " (out of " <> ToString[Length[allIdxs]] <> " total)",
+            ""] <> "\n\n" <>
+          "- This calls the LLM for each cell (time and API cost).\n" <>
+          "- Translations (if any) will be chain-updated.\n" <>
+          "- Runs asynchronously; you can keep editing during the run.\n" <>
+          "- Existing paragraphs/translations will be overwritten (irreversible).\n" <>
+          skipReason <>
+          If[hasShowTrans,
+            "\nNote: " <> ToString[nShowTrans] <>
+              " cells are currently showing translations.\n" <>
+              "They will be switched to paragraph view before sync.\n",
+            ""] <>
+          "\nProceed?"
+        ]
+      }],
+      {iL["実行", "Run"] -> True, iL["キャンセル", "Cancel"] -> False}];
+    If[answer =!= True, Return[]];
+
+    (* 翻訳表示中セルは paragraph 表示に切り替える（DocExpandIdea の誤動作防止） *)
+    If[hasShowTrans,
+      iDocShowAllAs["paragraph"];
+      NBAccess`NBInvalidateCellsCache[nb];
+      (* 表示切替後に対象セルを再収集してから、再度タイムスタンプフィルタを適用 *)
+      allIdxs = iDocCollectSyncTargets[nb];
+      idxs = If[instrTime > 0,
+        Select[allIdxs, iDocCellLastModified[nb, #] <= instrTime &],
+        allIdxs]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["一括同期を開始: 0/" <> ToString[Length[idxs]],
+         "Starting sync all: 0/" <> ToString[Length[idxs]]]];
+    (* チェーン開始: iDocSyncAllChain 内で 1 セル目の LLM 呼び出しを開始するが、
+       LLM 呼び出し自体が非同期なので、この関数は即座にユーザーへ制御を返す。
+       以降は各セルの LLM 応答コールバックから次セル処理が連鎖する。 *)
+    iDocSyncAllChain[nb, idxs, 1, useFb, Length[idxs]];
+  ];
+
+(* パレットボタンアクション *)
+iDocSyncAllAction[] :=
+  Module[{nb = iDocUserNotebook[]},
+    If[Head[nb] =!= NotebookObject, Return[]];
+    DocSyncAll[nb, Fallback -> ClaudeCode`GetPaletteFallback[]]
+  ];
+
+(* ============================================================
    パレットボタンアクション
    ============================================================ *)
 
@@ -3177,6 +3549,135 @@ iDocResolveCiteRef[key_String, bibTable_Association, format_String] :=
 iDocContainsJapanese[text_String] :=
   StringContainsQ[text, RegularExpression["[\\x{3000}-\\x{9FFF}\\x{F900}-\\x{FAFF}]"]];
 
+(* ============================================================
+   $ClaudeModel \:30d9\:30fc\:30b9\:306e\:5171\:901a LLM \:547c\:3073\:51fa\:3057\:30d8\:30eb\:30d1
+   ============================================================ *)
+
+(* \:30d1\:30ec\:30c3\:30c8\:8868\:793a\:7528\:306e\:30e2\:30c7\:30eb\:30e9\:30d9\:30eb\:3002
+   $ClaudeModel \:304c\:30ea\:30b9\:30c8\:5f62\:5f0f\:306a\:3089 2 \:8981\:7d20\:76ee\:306e / \:4ee5\:964d\:3092\:8868\:793a\:3001
+   \:6587\:5b57\:5217\:306a\:3089 Opus/Sonnet/Default \:5224\:5b9a\:3001\:305d\:308c\:4ee5\:5916\:306f $iPaletteModel \:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002 *)
+iDocPaletteModelLabel[] :=
+  Which[
+    ListQ[ClaudeCode`$ClaudeModel] && Length[ClaudeCode`$ClaudeModel] >= 2 &&
+        StringQ[ClaudeCode`$ClaudeModel[[2]]],
+      Module[{m = ClaudeCode`$ClaudeModel[[2]], parts},
+        parts = StringSplit[m, "/"];
+        If[Length[parts] >= 2, Last[parts], m]],
+    StringQ[ClaudeCode`$ClaudeModel] && StringTrim[ClaudeCode`$ClaudeModel] === "",
+      "Default",
+    StringQ[ClaudeCode`$ClaudeModel] && StringContainsQ[ClaudeCode`$ClaudeModel, "opus"],
+      "Opus",
+    StringQ[ClaudeCode`$ClaudeModel] && StringContainsQ[ClaudeCode`$ClaudeModel, "sonnet"],
+      "Sonnet",
+    True,
+      Switch[ClaudeCode`GetPaletteModel[],
+        "opus", "Opus", "sonnet", "Sonnet", _, "Default"]
+  ];
+
+(* $ClaudeModel \:304c LMStudio \:30ea\:30b9\:30c8\:5f62\:5f0f\:304b\:5224\:5b9a *)
+iDocIsLMStudioModel[] :=
+  ListQ[ClaudeCode`$ClaudeModel] && Length[ClaudeCode`$ClaudeModel] >= 2 &&
+    StringQ[ClaudeCode`$ClaudeModel[[1]]] &&
+    ToLowerCase[ClaudeCode`$ClaudeModel[[1]]] === "lmstudio";
+
+(* LMStudio \:7528 API \:30c8\:30fc\:30af\:30f3\:53d6\:5f97 (NBAccess \:7d4c\:7531) *)
+iDocLMStudioAPIKey[url_String:"http://localhost:1234"] :=
+  Module[{baseURL, k},
+    baseURL = StringReplace[url,
+      {RegularExpression["/v1/chat/completions$"] -> "",
+       RegularExpression["/v1$"] -> "",
+       RegularExpression["/$"] -> ""}];
+    If[baseURL === "", baseURL = "http://localhost:1234"];
+    k = Quiet @ Check[
+      NBAccess`NBGetLocalLLMAPIKey["lmstudio", baseURL,
+        PrivacySpec -> <|"AccessLevel" -> 1.0|>],
+      Null];
+    If[StringQ[k] && k =!= "", k, "lm-studio"]
+  ];
+
+(* LMStudio /v1/chat/completions \:3092\:540c\:671f\:547c\:3073\:51fa\:3057 (\:30c6\:30ad\:30b9\:30c8\:306e\:307f\:3001Vision \:975e\:5bfe\:5fdc) *)
+iDocCallLMStudioText[prompt_String] :=
+  Module[{lmURL, lmModel, baseURL, apiKey, reqData, reqTmpFile, bodyBytes,
+          resp, bytes, tmpFile, json, choices, msg, contentStr, strm, bodyStr},
+    lmModel = ClaudeCode`$ClaudeModel[[2]];
+    baseURL = If[Length[ClaudeCode`$ClaudeModel] >= 3,
+      ClaudeCode`$ClaudeModel[[3]], "http://127.0.0.1:1234"];
+    lmURL = If[StringEndsQ[baseURL, "/v1/chat/completions"],
+      baseURL,
+      If[StringEndsQ[baseURL, "/"],
+        baseURL <> "v1/chat/completions",
+        baseURL <> "/v1/chat/completions"]];
+    apiKey = iDocLMStudioAPIKey[baseURL];
+    reqData = <|
+      "model" -> lmModel,
+      "messages" -> {
+        <|"role" -> "user", "content" -> prompt|>}|>;
+    reqTmpFile = FileNameJoin[{$TemporaryDirectory,
+      "doc_llm_req_" <> IntegerString[Round[AbsoluteTime[] * 1000]] <> "_" <>
+      IntegerString[RandomInteger[{0, 999999}]] <> ".json"}];
+    Quiet @ Export[reqTmpFile, reqData, "RawJSON"];
+    bodyBytes = Quiet @ Check[ByteArray[BinaryReadList[reqTmpFile]], $Failed];
+    Quiet @ DeleteFile[reqTmpFile];
+    If[Head[bodyBytes] =!= ByteArray, Return[$Failed]];
+    resp = Quiet[URLRead[
+      HTTPRequest[lmURL, <|
+        "Method" -> "POST",
+        "Headers" -> {
+          "Content-Type"  -> "application/json; charset=utf-8",
+          "Authorization" -> "Bearer " <> apiKey},
+        "Body" -> bodyBytes|>],
+      TimeConstraint -> 300]];
+    If[!MatchQ[resp, _HTTPResponse], Return[$Failed]];
+    If[resp["StatusCode"] =!= 200, Return[$Failed]];
+    bytes = Quiet @ Check[resp["BodyByteArray"], $Failed];
+    If[Head[bytes] =!= ByteArray, Return[$Failed]];
+    tmpFile = FileNameJoin[{$TemporaryDirectory,
+      "doc_llm_resp_" <> IntegerString[Round[AbsoluteTime[] * 1000]] <> "_" <>
+      IntegerString[RandomInteger[{0, 999999}]] <> ".json"}];
+    Quiet[
+      strm = OpenWrite[tmpFile, BinaryFormat -> True];
+      BinaryWrite[strm, Normal[bytes]];
+      Close[strm]];
+    json = Quiet @ Check[Import[tmpFile, "RawJSON"], $Failed];
+    Quiet @ DeleteFile[tmpFile];
+    If[!AssociationQ[json], Return[$Failed]];
+    choices = json["choices"];
+    If[!ListQ[choices] || Length[choices] === 0, Return[$Failed]];
+    msg = First[choices]["message"];
+    If[!AssociationQ[msg], Return[$Failed]];
+    contentStr = msg["content"];
+    If[!StringQ[contentStr], Return[$Failed]];
+    contentStr
+  ];
+
+(* \:5171\:901a LLM \:547c\:3073\:51fa\:3057\:30e9\:30c3\:30d1\:30fc\:3002
+   - prompt \:304c\:6587\:5b57\:5217 \:304b\:3064 $ClaudeModel \:304c LMStudio \:30ea\:30b9\:30c8 \:2192 LMStudio \:76f4\:53e9\:304d
+   - prompt \:304c {Image, ...} \:30ea\:30b9\:30c8 (Vision) \:307e\:305f\:306f Anthropic \:30e2\:30c7\:30eb \:2192 \:5f93\:6765 LLMSynthesize
+   - LMStudio \:5931\:6557\:6642\:306f LLMSynthesize \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002
+   defaultModel \:306f Anthropic \:30d1\:30b9\:6642\:306b\:4f7f\:7528\:3055\:308c\:308b\:30d5\:30a9\:30eb\:30d0\:30c3\:30af\:30e2\:30c7\:30eb\:540d\:3002 *)
+iDocCallLLM[prompt_, defaultModel_String:"claude-sonnet-4-20250514"] :=
+  Module[{useLMStudio, lmResult, anthModel, fallback},
+    useLMStudio = iDocIsLMStudioModel[] && StringQ[prompt];
+    If[useLMStudio,
+      lmResult = Quiet @ Check[iDocCallLMStudioText[prompt], $Failed];
+      If[StringQ[lmResult] && StringLength[lmResult] > 0,
+        Return[lmResult]];
+      (* LMStudio \:5931\:6557\:6642\:306f Anthropic \:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af *)
+    ];
+    (* Anthropic \:30d1\:30b9: $ClaudeModel \:304c\:6587\:5b57\:5217\:306a\:3089\:305d\:308c\:3092\:3001\:305d\:3046\:3067\:306a\:3051\:308c\:3070\:30c7\:30d5\:30a9\:30eb\:30c8\:3092\:4f7f\:3046 *)
+    anthModel = If[StringQ[ClaudeCode`$ClaudeModel] && StringLength[ClaudeCode`$ClaudeModel] > 0,
+      ClaudeCode`$ClaudeModel, defaultModel];
+    fallback = Quiet @ Check[
+      LLMSynthesize[prompt,
+        LLMEvaluator -> <|"Model" -> anthModel|>],
+      $Failed];
+    fallback
+  ];
+
+(* ============================================================
+   \:30a8\:30af\:30b9\:30dd\:30fc\:30c8: \:8a00\:8a9e\:691c\:51fa\:30fb\:7ffb\:8a33\:30d8\:30eb\:30d1\:30fc
+   ============================================================ *)
+
 (* ノートブックのエクスポート時の表示言語を検出する。
    翻訳表示中のセルが多数なら翻訳モード、そうでなければ原文モード。 *)
 iDocDetectExportLanguage[nb_NotebookObject] :=
@@ -3222,8 +3723,7 @@ iDocTranslateBibTitle[entry_Association, targetLang_String] :=
       "CRITICAL: Output ONLY the English title, nothing else.";
 
     result = Quiet[Check[
-      LLMSynthesize[prompt,
-        LLMEvaluator -> <|"Model" -> "claude-sonnet-4-20250514"|>],
+      iDocCallLLM[prompt],
       $Failed]];
     If[StringQ[result] && StringLength[result] > 5 &&
        !iDocContainsJapanese[result],
@@ -3244,8 +3744,7 @@ iDocTranslateFigCaption[caption_String, targetLang_String] :=
       "Output ONLY the translated caption, nothing else.\n\n" <>
       "Caption: " <> caption;
     result = Quiet[Check[
-      LLMSynthesize[prompt,
-        LLMEvaluator -> <|"Model" -> "claude-sonnet-4-20250514"|>],
+      iDocCallLLM[prompt],
       $Failed]];
     If[StringQ[result] && StringLength[result] > 0,
       StringTrim[result], caption]
@@ -3531,8 +4030,7 @@ iDocConvertMathCellViaLLM[nb_NotebookObject, cellIdx_Integer,
       "- Output ONLY the converted text, starting from the first character\n";
 
     result = Quiet[Check[
-      LLMSynthesize[{img, prompt},
-        LLMEvaluator -> <|"Model" -> model|>],
+      iDocCallLLM[{img, prompt}, model],
       $Failed]];
     If[StringQ[result] && StringLength[result] > 0 &&
        !StringStartsQ[result, "Error"] &&
@@ -3577,8 +4075,7 @@ iDocDisplayMathToExport[nb_NotebookObject, cellIdx_Integer, format_String] :=
       "- Use standard LaTeX: \\frac, ^{}, _{}, \\sum, \\int, etc.\n" <>
       "- Do NOT add any explanation or preamble\n";
     result = Quiet[Check[
-      LLMSynthesize[{img, prompt},
-        LLMEvaluator -> <|"Model" -> model|>],
+      iDocCallLLM[{img, prompt}, model],
       $Failed]];
     If[StringQ[result] && StringLength[result] > 0 &&
        !StringStartsQ[result, "Error"],
@@ -3994,8 +4491,7 @@ iDocLaTeXifyMath[text_String, pdfContext_String:""] :=
       protected;
 
     result = Quiet[Check[
-      LLMSynthesize[prompt,
-        LLMEvaluator -> <|"Model" -> model|>],
+      iDocCallLLM[prompt, model],
       $Failed]];
     If[StringQ[result] && StringLength[result] > 0 &&
        !StringStartsQ[result, "Error"] &&
@@ -4872,7 +5368,15 @@ ShowDocPalette[] := (
       iDocButton[iL["\[CapitalAHat] 全翻訳", "\[CapitalAHat] All Translations"],
         RGBColor[0.3, 0.4, 0.65],
         iDocTranslateAllAndShow[]],
-      Spacer[1],
+      Spacer[3],
+
+      (* -- 一括同期（指示/辞書の変更を全セルに反映） --
+         セル内容を上書きする重要操作のため、切替ボタン同様に
+         前後に余白を設けて視覚的に分離する。 *)
+      iDocButton[iL["\[Equilibrium] 一括同期", "\[Equilibrium] Sync All"],
+        RGBColor[0.65, 0.45, 0.2],
+        iDocSyncAllAction[]],
+      Spacer[3],
 
       (* -- エクスポート -- *)
       Style[iL[" エクスポート", " Export"], Bold, 8, GrayLevel[0.3]],
@@ -4898,9 +5402,7 @@ ShowDocPalette[] := (
       Style[iL[" 設定", " Settings"], Bold, 8, GrayLevel[0.3]],
       Dynamic[
         Button[
-          Style[iL["モデル: ", "Model: "] <>
-            Switch[ClaudeCode`GetPaletteModel[],
-              "opus", "Opus", "sonnet", "Sonnet", _, "Default"],
+          Style[iL["モデル: ", "Model: "] <> iDocPaletteModelLabel[],
             9, Bold, GrayLevel[0.2]],
           Module[{newModel},
             newModel = Switch[ClaudeCode`GetPaletteModel[],
