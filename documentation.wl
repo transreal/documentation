@@ -101,6 +101,26 @@ DocExportWord::usage =
 ShowDocPalette::usage =
   "ShowDocPalette[] はドキュメント作成用パレットを表示する。";
 
+DocRefine::usage =
+  "DocRefine[nb, cellIdx] は選択セルのテキストを LLM で校正する。\n" <>
+  "文法的・表現上の不自然さを最小限の修正で訂正し、\n" <>
+  "元の意味・構成・文体・トーンを完全に保持する。\n" <>
+  "Directive/Dictionary セルの指示は厳守する。\n" <>
+  "翻訳付きセルの場合は翻訳も連鎖更新する。\n" <>
+  "対象外: idea モード、compute モード、メタセル。\n" <>
+  "Options: Fallback -> False\n" <>
+  "例: DocRefine[EvaluationNotebook[], 3]";
+
+DocPolish::usage =
+  "DocPolish[nb, cellIdx] は選択セルのテキストを LLM でより完璧に書き直す。\n" <>
+  "内容（情報・主旨・意図）は保持しつつ、\n" <>
+  "文の構成や言い回しを必要に応じて大きく変更する。\n" <>
+  "Directive/Dictionary セルの指示は厳守する。\n" <>
+  "翻訳付きセルの場合は翻訳も連鎖更新する。\n" <>
+  "対象外: idea モード、compute モード、メタセル。\n" <>
+  "Options: Fallback -> False\n" <>
+  "例: DocPolish[EvaluationNotebook[], 3]";
+
 DocSplitCell::usage =
   "DocSplitCell[nb, cellIdx] はカーソル位置でセルを前半・後半に分割する。\n" <>
   "パラグラフ/翻訳表示中: 表示テキストと保存データを対応位置で分割し、\n" <>
@@ -137,6 +157,8 @@ Options[DocExportMarkdown] = {"MathFormat" -> False};
 Options[DocExportLaTeX] = {"MathFormat" -> False};
 Options[DocExportWord] = {"ReferenceDoc" -> None, "MathFormat" -> False};
 Options[DocCompute] = {Fallback -> False};
+Options[DocRefine] = {Fallback -> False};
+Options[DocPolish] = {Fallback -> False};
 
 Begin["`Private`"];
 
@@ -144,6 +166,115 @@ Begin["`Private`"];
    ローカリゼーション
    ============================================================ *)
 iL[ja_String, en_String] := If[$Language === "Japanese", ja, en];
+
+(* ============================================================
+   遅延ワンショット実行 (2026-05-13 改修)
+   ============================================================
+   旧実装は iDocOneShotAfter[expr, {N}] を直接使用していたが、
+   これは claudecode の $iSharedPollingTask (3秒周期) と並列に
+   独自の ScheduledTask をメインカーネル上に大量に登録するため、
+   ClaudeRuntime の非同期実行 (ParallelSubmit + polling) と
+   プリエンプティブタスクキューが競合し、相互ブロックの原因となる。
+
+   改修方針: claudecode の ClaudeRegisterPollingTick (3秒周期共有tick)
+   に「N秒経過後に1回だけ body を実行し自己解除」するエントリを乗せる。
+   これにより documentation.wl は独自の ScheduledTask を一切作らず、
+   ClaudeCode/Runtime の polling 機構と統一される。
+
+   シグネチャは iDocOneShotAfter[body, {N}] と同型なので、
+   ファイル全体の iDocOneShotAfter を単純な名前置換で
+   iDocOneShotAfter に置き換えれば移行完了。
+
+   注意: 共有 tick は 3秒間隔のため、delay の実際の発火タイミングは
+   ceil(delay/3)*3 秒前後の粒度になる。UI のステータスメッセージ
+   クリア (N=2,3,5) の用途では問題ない。precise な timing が必要な
+   場合は使用しないこと (元から RunScheduledTask の粒度も粗い)。
+
+   ClaudeCode\` が未ロードのとき (このパッケージ単体ロード時) は
+   従来の iDocOneShotAfter にフォールバック。 *)
+$iDocOneShotCounter = 0;
+
+SetAttributes[iDocOneShotAfter, HoldAll];
+
+iDocOneShotAfter[body_, {delay_?NumericQ}] :=
+  Module[{key, startTime, hasRegisterFn, registerFn, unregisterFn,
+          heldBody},
+    heldBody = HoldComplete[body];
+    
+    hasRegisterFn = Quiet[
+      ValueQ[ClaudeCode`ClaudeRegisterPollingTick] &&
+      ValueQ[ClaudeCode`ClaudeUnregisterPollingTick]];
+    
+    If[!TrueQ[hasRegisterFn],
+      (* フォールバック: 従来の iDocOneShotAfter
+         (ClaudeCode\` 未ロード時のみ通る経路) *)
+      Return[Quiet @ Check[
+        RunScheduledTask[ReleaseHold[heldBody], {delay}],
+        $Failed]]];
+    
+    $iDocOneShotCounter += 1;
+    key = "DocOneShot_" <> ToString[$iDocOneShotCounter] <>
+          "_" <> ToString[Round[1000 * AbsoluteTime[]]];
+    startTime = AbsoluteTime[];
+    registerFn = ClaudeCode`ClaudeRegisterPollingTick;
+    unregisterFn = ClaudeCode`ClaudeUnregisterPollingTick;
+    
+    Quiet @ Check[
+      registerFn[key,
+        Function[Null,
+          Module[{k = key, st = startTime, d = delay, ufn = unregisterFn,
+                  hb = heldBody},
+            If[AbsoluteTime[] - st >= d,
+              (* 自己解除を先に行い、その後 body を評価する。
+                 body 実行中の例外で解除が漏れることを防ぐ。 *)
+              Quiet @ Check[ufn[k], Null];
+              Quiet @ Check[ReleaseHold[hb], Null]]]],
+        "Phase"    -> "DocOneShot",
+        "Caller"   -> "Documentation",
+        "Priority" -> 1000],
+      $Failed]
+  ];
+
+iDocOneShotAfter[___] := $Failed;
+
+(* ============================================================
+   iDocWithoutRuntime (Phase 32j v2 Revert)
+   ============================================================
+   Phase 32j v1 で iScheduleAtAsync による非同期化を試みたが
+   ClaudeEval 実行時に Mathematica 自体がクラッシュしたため Revert。
+   再び Block で $UseClaudeRuntime = False を強制する旧方式に戻す。
+   
+   documentation の LLM 呼び出しは旧パス (ClaudeQueryAsync) を通り、
+   ClaudeRuntime ロード状態でも安定動作する。
+   ============================================================ *)
+
+SetAttributes[iDocWithoutRuntime, HoldFirst];
+iDocWithoutRuntime[body_] :=
+  Block[{ClaudeCode`$UseClaudeRuntime = False}, body];
+
+(* ============================================================
+   UI 優先度モード (2026-05-13 Phase 32e 改修)
+   ============================================================
+   旧設計: documentation のエントリで $claudeProgress を見て
+   ClaudeRuntime が稼働中なら abort する「ガード」方式。
+   → 問題: ガード後も Notebooks[] 等のフロントエンド同期呼び出しで
+     ブロックする。また、UI 操作をブロックすること自体がユーザー体験
+     として問題。
+
+   新設計: UI 操作を「高優先度モード」として claudecode に伝え、
+   その間 ClaudeRuntime async polling (Priority 10) を共有 tick の
+   ループでスキップする。documentation 自身の遅延タスクは
+   Priority 1000 で登録されているので継続実行される。
+   → UI 操作は中断されず、ClaudeRuntime の負荷だけが下がる。
+   → 30秒の自動タイムアウトで通常モードに戻る。
+   ============================================================ *)
+
+iDocBeginUIActivity[seconds_:30] :=
+  Quiet @ Check[
+    ClaudeCode`ClaudeBeginHighPriority[seconds],
+    $Failed];
+
+iDocBeginUIActivity[___] := $Failed;
 
 (* ============================================================
    定数: 視覚スタイル
@@ -206,18 +337,60 @@ $iDocLastTarget = {None, 0};
    パレット用: ノートブック/セル解決 (UI メタデータのみ、内容非接触)
    ============================================================ *)
 
-(* パレットから呼ばれても正しいユーザーノートブックを返す *)
+(* キャッシュ: 一度成功した UserNotebook を覚えておき、
+   再評価時の Notebooks[] フロントエンド同期呼び出しを最小化する。
+   2026-05-13 改修: ClaudeRuntime 等が大量セル書き込みでフロントエンドを
+   占有している間に Notebooks[] を呼ぶと「ノートブックコンテンツを
+   フォーマットしています」ダイアログでフリーズに見える長時間ブロックが
+   発生する。 *)
+If[!ValueQ[$iDocCachedUserNb], $iDocCachedUserNb = None];
+
+(* パレットから呼ばれても正しいユーザーノートブックを返す。
+   InputNotebook[] を最優先 → キャッシュ → Notebooks[] の順。
+   Notebooks[] はフロントエンド占有時に長時間ブロックするため最後の手段。 *)
 iDocUserNotebook[] :=
-  Module[{nb = Quiet[InputNotebook[]], nbs},
+  Module[{nb, nbs},
+    nb = Quiet[InputNotebook[]];
     If[Head[nb] === NotebookObject &&
        Quiet[CurrentValue[nb, WindowClickSelect]] =!= False,
+      $iDocCachedUserNb = nb;
       Return[nb]];
-    nbs = Select[Notebooks[],
-      Quiet[CurrentValue[#, WindowClickSelect]] =!= False &&
-      !TrueQ[Quiet[CurrentValue[#, Saveable] === False &&
-                    CurrentValue[#, WindowFloating]]] &];
-    If[Length[nbs] > 0, First[nbs], nb]
+    
+    (* InputNotebook が使えない/パレット側のとき: キャッシュを優先 *)
+    If[Head[$iDocCachedUserNb] === NotebookObject &&
+       Quiet @ Check[
+         CurrentValue[$iDocCachedUserNb, WindowClickSelect] =!= False,
+         False],
+      Return[$iDocCachedUserNb]];
+    
+    (* キャッシュもない場合のみ Notebooks[] にフォールバック。
+       TimeConstrained で 0.5秒でタイムアウト (フリーズ防止)。
+       2026-05-15 fix: Notebooks[] が $TimedOut や $Aborted など atomic な値を
+       返した場合 Select::normal が出るため、List であることを明示確認する。 *)
+    nbs = TimeConstrained[
+      Module[{nbList = Quiet @ Check[Notebooks[], $Failed]},
+        If[!ListQ[nbList],
+          $Failed,
+          Select[nbList,
+            Quiet[CurrentValue[#, WindowClickSelect]] =!= False &&
+            !TrueQ[Quiet[CurrentValue[#, Saveable] === False &&
+                          CurrentValue[#, WindowFloating]]] &]]],
+      0.5,
+      $TimedOut];
+    
+    If[nbs === $TimedOut || nbs === $Failed || !ListQ[nbs],
+      (* フロントエンド占有中 / Notebooks[] 評価失敗:
+         InputNotebook の結果を返す
+         (NotebookObject でなくとも下流のチェックで弾かれる) *)
+      Return[nb]];
+    
+    If[Length[nbs] > 0,
+      $iDocCachedUserNb = First[nbs];
+      First[nbs],
+      nb]
   ];
+
+iDocUserNotebook[___] := Quiet[InputNotebook[]];
 
 (* 操作対象セルインデックスを1つ解決する。
    セルブラケット選択があればそれを使い記憶する。
@@ -775,7 +948,7 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                         iL["更新完了", "Update complete"]];
                       NBAccess`NBSelectCell[nb2, ci];
                       Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                      RunScheduledTask[With[{pNb = nb2},
+                      iDocOneShotAfter[With[{pNb = nb2},
                         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
                     nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, ci],
                     Fallback -> useFallback],
@@ -783,14 +956,14 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                   Quiet[CurrentValue[nb2, WindowStatusArea] =
                     iL["更新完了", "Update complete"]];
                   Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                  RunScheduledTask[With[{pNb = nb2},
+                  iDocOneShotAfter[With[{pNb = nb2},
                     Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
               (* エラー *)
               Quiet[CurrentValue[nb2, WindowStatusArea] =
                 iL["更新エラー", "Update error"]];
               NBAccess`NBSelectCell[nb2, ci];
               Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-              RunScheduledTask[With[{pNb = nb2},
+              iDocOneShotAfter[With[{pNb = nb2},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
           nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
       (* 非同期呼び出し直後にセル選択を復元: カーソルジャンプ防止 *)
@@ -814,40 +987,50 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         Function[t, iDocExpandPromptFn[t, ctx]]]
     ];
 
-    (* 非同期 LLM 変換: カーネルをブロックしない。 *)
+    (* 非同期 LLM 変換: カーネルをブロックしない。
+       Phase 32f (2026-05-13) 改修: completionFn 本体を iDocOneShotAfter
+       (Priority 1000) で遅延実行する。これにより LLM 応答受信直後の
+       メインカーネル占有時間を最小化し、ユーザー UI 操作の応答性を確保する。
+       また各 NBCellSet 呼び出し間に Pause[0.05] を挟みフロントエンドが
+       他のリクエストに応答する隙間を作る。 *)
     iDocSetJobAnchorCell[nb, cellIdx];
     With[{nb2 = nb, cellAtts = iDocGetCurrentAttachments[nb], ss = savedScroll},
       NBAccess`NBCellTransformWithLLM[nb, cellIdx,
         promptFn,
-        (* completionFn: LLM 応答後に実行されるコールバック *)
+        (* completionFn: LLM 応答後に呼ばれる軽量ラッパー。
+           本体処理は iDocOneShotAfter で 0.1秒後に共有 tick 経由実行。 *)
         Function[result,
-          If[AssociationQ[result],
-            Module[{ci = result["CellIdx"]},
-              NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagAlternate,
-                result["OriginalText"]];
-              NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "paragraph"];
-              NBAccess`NBCellSetOptions[nb2, ci,
-                Sequence @@ $iDocParagraphCellOpts];
-              (* 編集追跡: 展開結果をクリーンテキストとして記録 *)
-              NBAccess`NBCellSetTaggingRule[nb2, ci,
-                $iDocTagCleanText, result["Response"]];
-              (* 依存資料: 展開時のアタッチメントを記録（既存設定がなければ） *)
-              If[Length[iDocGetRefSources[nb2, ci]] === 0 &&
-                 Length[cellAtts] > 0,
-                Module[{pdfAtts},
-                  pdfAtts = Select[cellAtts,
-                    StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
-                  If[Length[pdfAtts] > 0,
-                    iDocSetRefSources[nb2, ci,
-                      {#, All} & /@ pdfAtts]]]];
-              (* セル選択位置を復元 *)
-              NBAccess`NBSelectCell[nb2, ci];
-              Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]],
-            (* エラー *)
-            Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-            MessageDialog[iL[
-              "エラー: LLM 応答を取得できませんでした。",
-              "Error: Could not get LLM response."]]]],
+          With[{r = result},
+            iDocOneShotAfter[
+              If[AssociationQ[r],
+                Module[{ci = r["CellIdx"]},
+                  NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagAlternate,
+                    r["OriginalText"]]; Pause[0.05];
+                  NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "paragraph"];
+                  Pause[0.05];
+                  NBAccess`NBCellSetOptions[nb2, ci,
+                    Sequence @@ $iDocParagraphCellOpts]; Pause[0.05];
+                  (* 編集追跡: 展開結果をクリーンテキストとして記録 *)
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagCleanText, r["Response"]]; Pause[0.05];
+                  (* 依存資料: 展開時のアタッチメントを記録（既存設定がなければ） *)
+                  If[Length[iDocGetRefSources[nb2, ci]] === 0 &&
+                     Length[cellAtts] > 0,
+                    Module[{pdfAtts},
+                      pdfAtts = Select[cellAtts,
+                        StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
+                      If[Length[pdfAtts] > 0,
+                        iDocSetRefSources[nb2, ci,
+                          {#, All} & /@ pdfAtts]]]];
+                  (* セル選択位置を復元 *)
+                  NBAccess`NBSelectCell[nb2, ci];
+                  Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]],
+                (* エラー *)
+                Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                MessageDialog[iL[
+                  "エラー: LLM 応答を取得できませんでした。",
+                  "Error: Could not get LLM response."]]],
+              {0.1}]]],
         Fallback -> useFallback]
     ];
     (* 非同期呼び出し直後にセル選択を復元: カーソルジャンプ防止 *)
@@ -1212,7 +1395,7 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                 iL["翻訳更新エラー", "Translation update error"]];
               NBAccess`NBSelectCell[nb2, ci]];
             Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-            RunScheduledTask[With[{pNb = nb2},
+            iDocOneShotAfter[With[{pNb = nb2},
               Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
           nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
       (* 非同期呼び出し直後にセル選択を復元: カーソルジャンプ防止 *)
@@ -1276,33 +1459,38 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
           Function[t, iDocTranslateAutoPromptFn[t, pl, al, ctx]]]
     ];
 
-    (* 非同期翻訳 *)
+    (* 非同期翻訳。Phase 32f (2026-05-13) 改修: completionFn を
+       iDocOneShotAfter 経由遅延実行+ Pause で分散。 *)
     iDocSetJobAnchorCell[nb, cellIdx];
     With[{nb2 = nb, srcText = currentText,
           isPlain = (!StringQ[mode] || mode === "translated"),
           ss = savedScroll},
       NBAccess`NBCellTransformWithLLM[nb, cellIdx,
         promptFn,
-        (* completionFn *)
+        (* completionFn: 遅延実行ラッパー *)
         Function[result,
-          If[AssociationQ[result],
-            Module[{ci = result["CellIdx"]},
-              If[isPlain,
-                NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "translated"]];
-              NBAccess`NBCellSetTaggingRule[nb2, ci,
-                $iDocTagTranslationSrc, srcText];
-              NBAccess`NBCellSetTaggingRule[nb2, ci,
-                $iDocTagTranslation, result["Response"]];
-              NBAccess`NBCellSetTaggingRule[nb2, ci,
-                $iDocTagShowTranslation, True];
-              NBAccess`NBCellSetOptions[nb2, ci,
-                Sequence @@ $iDocTranslationCellOpts];
-              (* 編集追跡: 翻訳結果をクリーンテキストとして記録 *)
-              NBAccess`NBCellSetTaggingRule[nb2, ci,
-                $iDocTagCleanText, result["Response"]];
-              (* セル選択位置を復元 *)
-              NBAccess`NBSelectCell[nb2, ci];
-              Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]]];],
+          With[{r = result},
+            iDocOneShotAfter[
+              If[AssociationQ[r],
+                Module[{ci = r["CellIdx"]},
+                  If[isPlain,
+                    NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode,
+                      "translated"]; Pause[0.05]];
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagTranslationSrc, srcText]; Pause[0.05];
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagTranslation, r["Response"]]; Pause[0.05];
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagShowTranslation, True]; Pause[0.05];
+                  NBAccess`NBCellSetOptions[nb2, ci,
+                    Sequence @@ $iDocTranslationCellOpts]; Pause[0.05];
+                  (* 編集追跡: 翻訳結果をクリーンテキストとして記録 *)
+                  NBAccess`NBCellSetTaggingRule[nb2, ci,
+                    $iDocTagCleanText, r["Response"]]; Pause[0.05];
+                  (* セル選択位置を復元 *)
+                  NBAccess`NBSelectCell[nb2, ci];
+                  Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]]],
+              {0.1}]]],
         Fallback -> useFallback]
     ];
     (* 非同期呼び出し直後にセル選択を復元: カーソルジャンプ防止 *)
@@ -1393,7 +1581,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                             {$iDocTagRoot, "syncTag"}, Inherited];
                           Quiet[CurrentValue[nb2, WindowStatusArea] =
                             iL["同期完了", "Sync complete"]];
-                          RunScheduledTask[With[{pNb = nb2},
+                          iDocOneShotAfter[With[{pNb = nb2},
                             Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
                         nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, idx],
                         Fallback -> fb]],
@@ -1401,13 +1589,13 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                       {$iDocTagRoot, "syncTag"}, Inherited];
                     Quiet[CurrentValue[nb2, WindowStatusArea] =
                       iL["同期完了", "Sync complete"]];
-                    RunScheduledTask[With[{pNb = nb2},
+                    iDocOneShotAfter[With[{pNb = nb2},
                       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
                 NBAccess`NBCellSetTaggingRule[nb2, idx,
                   {$iDocTagRoot, "syncTag"}, Inherited];
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["同期エラー", "Sync error"]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
@@ -1448,7 +1636,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                 {$iDocTagRoot, "syncTag"}, Inherited];
               Quiet[CurrentValue[nb2, WindowStatusArea] =
                 iL["同期完了", "Sync complete"]];
-              RunScheduledTask[With[{pNb = nb2},
+              iDocOneShotAfter[With[{pNb = nb2},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
@@ -1484,7 +1672,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                 {$iDocTagRoot, "syncTag"}, Inherited];
               Quiet[CurrentValue[nb2, WindowStatusArea] =
                 iL["同期完了", "Sync complete"]];
-              RunScheduledTask[With[{pNb = nb2},
+              iDocOneShotAfter[With[{pNb = nb2},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb, cellIdx],
             Fallback -> useFallback]],
@@ -1589,7 +1777,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["同期完了", "Sync complete"]];
                 Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> privLevel, Fallback -> fb]],
 
@@ -1669,7 +1857,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                             Quiet[CurrentValue[nb2, WindowStatusArea] =
                               iL["同期完了", "Sync complete"]];
                             Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                            RunScheduledTask[With[{pNb = nb2},
+                            iDocOneShotAfter[With[{pNb = nb2},
                               Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
                         nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, idx],
                         Fallback -> fb]],
@@ -1679,14 +1867,14 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                     Quiet[CurrentValue[nb2, WindowStatusArea] =
                       iL["同期完了", "Sync complete"]];
                     Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                    RunScheduledTask[With[{pNb = nb2},
+                    iDocOneShotAfter[With[{pNb = nb2},
                       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
                   NBAccess`NBCellSetTaggingRule[nb2, idx,
                     {$iDocTagRoot, "syncTag"}, Inherited];
                   Quiet[CurrentValue[nb2, WindowStatusArea] =
                     iL["同期エラー", "Sync error"]];
                   Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                  RunScheduledTask[With[{pNb = nb2},
+                  iDocOneShotAfter[With[{pNb = nb2},
                     Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
             nb, PrivacyLevel -> privLevel, Fallback -> fb]],
 
@@ -1745,7 +1933,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["同期完了", "Sync complete"]];
                 Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> privLevel, Fallback -> fb]],
 
@@ -1789,7 +1977,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["同期完了", "Sync complete"]];
                 Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> privLevel, Fallback -> fb]],
 
@@ -1986,7 +2174,7 @@ iDocShowAllAs[targetView_String] :=
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL[ToString[count] <> " セルを切り替えました。",
            ToString[count] <> " cells switched."]];
-      RunScheduledTask[With[{pNb = nb},
+      iDocOneShotAfter[With[{pNb = nb},
         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]];
   ];
 
@@ -2044,12 +2232,12 @@ iDocTranslateAllChain[nb_, idxs_, pos_, fb_, total_] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[total] <> " セルの翻訳完了。表示を切替中...",
          ToString[total] <> " cells translated. Switching view..."]];
-    RunScheduledTask[
+    iDocOneShotAfter[
       (NBAccess`NBInvalidateCellsCache[nb];
        iDocShowAllAs["translation"];
        Quiet[CurrentValue[nb, WindowStatusArea] =
          iL["全翻訳表示完了", "All translations displayed"]];
-       RunScheduledTask[With[{pNb = nb},
+       iDocOneShotAfter[With[{pNb = nb},
          Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]),
       {1}],
     Module[{cellIdx = idxs[[pos]], mode},
@@ -2063,7 +2251,7 @@ iDocTranslateAllChain[nb_, idxs_, pos_, fb_, total_] :=
         (* 翻訳実行 *)
         DocTranslate[nb, cellIdx, Fallback -> fb];
         (* DocTranslate は非同期なので、遅延で次へ進む *)
-        RunScheduledTask[
+        iDocOneShotAfter[
           With[{pNb = nb, is = idxs, p = pos, f = fb, t = total},
             iDocTranslateAllChain[pNb, is, p + 1, f, t]], {2}]]]
   ];
@@ -2095,7 +2283,7 @@ iDocCollectSyncTargets[nb_NotebookObject] :=
 (* 1セルの再同期をコールバックチェーン方式で実行する。
    LLM 応答が返ったコールバック内で onDone[] を呼んで次セルの処理に進む。
    これにより「前セルの LLM 完了を待たずに次セル開始」という競合を回避し、
-   RunScheduledTask の遅延評価に依存しない確実な逐次実行を実現する。 *)
+   RunScheduledTask 系の遅延評価に依存しない確実な逐次実行を実現する。 *)
 iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
   Module[{mode, showTrans, currentParagraph, ideaText, translation,
           context, directives, dictionary, prompt, syncTag, privLevel, hasText},
@@ -2213,7 +2401,7 @@ iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
   ];
 
 (* コールバックチェーン方式: LLM 応答完了時に次セルを呼ぶ。
-   前セルの LLM 完了を確実に待ち、RunScheduledTask の遅延評価に依存しない。
+   前セルの LLM 完了を確実に待ち、RunScheduledTask 系の遅延評価に依存しない。
    非同期 LLM 呼び出し自体はノンブロッキングなので、フロントエンドも止まらない。 *)
 iDocSyncAllChain[nb_, idxs_, pos_, fb_, total_] :=
   If[pos > Length[idxs],
@@ -2221,7 +2409,7 @@ iDocSyncAllChain[nb_, idxs_, pos_, fb_, total_] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[total] <> " セルの一括同期完了。",
          ToString[total] <> " cell(s) synced."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}],
     Module[{cellIdx = idxs[[pos]]},
       Quiet[CurrentValue[nb, WindowStatusArea] =
@@ -2366,6 +2554,12 @@ iDocButton[label_String, color_, action_] :=
     Background -> color,
     ImageSize -> {100, 18},
     FrameMargins -> {{4, 4}, {1, 1}},
+    (* Phase 32h (2026-05-13): Method -> "Queued" に戻す。
+       Preemptive はメインカーネル評価を中断するが、その内部で
+       フロントエンドへの同期呼び出し (Notebooks[], CurrentValue 等) が
+       並行する共有 polling tick とぶつかってフリーズする傾向があった。
+       Queued なら test_phase32 評価の自然な隙間 (LLM 応答待ち等) で
+       アクションが走る。 *)
     Method -> "Queued"
   ];
 
@@ -2388,7 +2582,35 @@ iDocButton2[label_String, color_, action_] :=
 iDocButtonRow[b1_, b2_] :=
   Grid[{{b1, b2}}, Spacings -> 0.1, ItemSize -> {Automatic, Automatic}];
 
+(* ============================================================
+   Phase 32g (2026-05-13): Preemptive エントリ + 遅延実行
+   ============================================================
+   設計:
+   1. Button[..., Method -> "Preemptive"] でアクションがメインカーネル
+      評価を割り込んで即座に走る。
+   2. しかし Preemptive 中のフロントエンド呼び出し (Notebooks[], 
+      InputNotebook[], CurrentValue[..., WindowClickSelect] 等) は、
+      フロントエンドが test_phase32 等の書き込みで忙しいとき詰まる。
+   3. そこで Preemptive エントリでは「UI 優先モード ON」だけ即座に
+      行い、実処理は iDocOneShotAfter で 0.1秒後の共有 tick に
+      遅延する。共有 tick は ScheduledTask 内で動き、メインカーネル
+      評価の隙間に挿入されるので、フロントエンドへの問い合わせが
+      ブロックを起こしにくい。
+   4. UI 優先モードにより ClaudeRuntime async polling は抑制されるため、
+      共有 tick の負荷が下がり documentation 処理が優先される。
+   ============================================================ *)
+
+SetAttributes[iDocEntryDeferred, HoldFirst];
+iDocEntryDeferred[body_] :=
+  Module[{},
+    iDocBeginUIActivity[30];
+    iDocOneShotAfter[iDocWithoutRuntime[body], {0.1}]
+  ];
+
 iDocExpandSelected[] :=
+  iDocEntryDeferred[iDocExpandSelectedImpl[]];
+
+iDocExpandSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -2397,7 +2619,6 @@ iDocExpandSelected[] :=
     If[Length[cellIdxs] === 1,
       DocExpandIdea[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]];
       NBAccess`NBSelectCell[nb, First[cellIdxs]],
-      (* 複数セル: 非同期チェーンで逐次展開 *)
       iDocExpandSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
   ];
 
@@ -2406,7 +2627,7 @@ iDocExpandSelectedChain[nb_, idxs_, pos_, fb_] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[Length[idxs]] <> " セルを展開しました。",
          ToString[Length[idxs]] <> " cells expanded."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["展開中: ", "Expanding: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
@@ -2420,13 +2641,16 @@ iDocExpandSelectedChain[nb_, idxs_, pos_, fb_] :=
            チェーンの次ステップを呼ぶ。 *)
         DocExpandIdea[nb, cellIdx, Fallback -> fb];
         (* DocExpandIdea は非同期なので即座に次へ進めない。
-           代わに ScheduledTask で遅延実行して次のセルへ。 *)
-        RunScheduledTask[
+           代わりに iDocOneShotAfter で遅延実行して次のセルへ。 *)
+        iDocOneShotAfter[
           With[{pNb = nb, is = idxs, p = pos, f = fb},
             iDocExpandSelectedChain[pNb, is, p + 1, f]], {2}]]]
   ];
 
 iDocToggleSelected[] :=
+  iDocEntryDeferred[iDocToggleSelectedImpl[]];
+
+iDocToggleSelectedImpl[] :=
   Module[{nb, cellIdx},
     {nb, cellIdx} = iDocResolveTargetCell[];
     If[cellIdx === 0,
@@ -2436,6 +2660,9 @@ iDocToggleSelected[] :=
   ];
 
 iDocTranslateSelected[] :=
+  iDocEntryDeferred[iDocTranslateSelectedImpl[]];
+
+iDocTranslateSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -2453,7 +2680,7 @@ iDocTranslateSelectedChain[nb_, idxs_, pos_, fb_] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[Length[idxs]] <> " セルを翻訳しました。",
          ToString[Length[idxs]] <> " cells translated."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["翻訳中: ", "Translating: "] <> ToString[pos] <> "/" <> ToString[Length[idxs]]];
@@ -2463,7 +2690,7 @@ iDocTranslateSelectedChain[nb_, idxs_, pos_, fb_] :=
         (* プロンプトモード / Note セルはスキップ *)
         iDocTranslateSelectedChain[nb, idxs, pos + 1, fb],
         DocTranslate[nb, cellIdx, Fallback -> fb];
-        RunScheduledTask[
+        iDocOneShotAfter[
           With[{pNb = nb, is = idxs, p = pos, f = fb},
             iDocTranslateSelectedChain[pNb, is, p + 1, f]], {2}]]]
   ];
@@ -2479,6 +2706,9 @@ iDocSyncSelected[] :=
 
 (* 選択セルから展開データを削除する *)
 iDocDeleteExpandSelected[] :=
+  iDocEntryDeferred[iDocDeleteExpandSelectedImpl[]];
+
+iDocDeleteExpandSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -2511,6 +2741,9 @@ iDocDeleteExpandSelected[] :=
 
 (* 選択セルから翻訳データを削除する *)
 iDocDeleteTranslateSelected[] :=
+  iDocEntryDeferred[iDocDeleteTranslateSelectedImpl[]];
+
+iDocDeleteTranslateSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -2587,7 +2820,7 @@ iDocToggleExportExclude[] :=
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL[ToString[count] <> " セルの除外設定を切替。",
            ToString[count] <> " cell(s) export toggle."]];
-      RunScheduledTask[With[{pNb = nb},
+      iDocOneShotAfter[With[{pNb = nb},
         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]];
   ];
 
@@ -2734,6 +2967,9 @@ iDocApplyModeStyle[nb_, cellIdx_, mode_, showTrans_] :=
       NBAccess`NBCellSetStyle[nb, cellIdx, "Text"],
     True, Null];
 iDocSplitCell[] :=
+  iDocEntryDeferred[iDocSplitCellImpl[]];
+
+iDocSplitCellImpl[] :=
   Module[{nb, cellIdx},
     {nb, cellIdx} = iDocResolveCursorCell[];
     If[cellIdx === 0,
@@ -2923,7 +3159,7 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
                   iDocWriteAndTrack[nb2, ci2, bp]];
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["プロンプト分割完了", "Prompt split done"]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]]];
 
@@ -2961,18 +3197,21 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
                   iDocWriteAndTrack[nb2, ci2, bp]];
                 Quiet[CurrentValue[nb2, WindowStatusArea] =
                   iL["翻訳分割完了", "Translation split done"]];
-                RunScheduledTask[With[{pNb = nb2},
+                iDocOneShotAfter[With[{pNb = nb2},
                   Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
             nb, PrivacyLevel -> privLevel, Fallback -> useFallback]]]];
 
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["セルを分割しました。", "Cell split."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
   ];
 
 (* --- セル合併 --- *)
 iDocMergeCells[] :=
+  iDocEntryDeferred[iDocMergeCellsImpl[]];
+
+iDocMergeCellsImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] < 2,
@@ -3140,7 +3379,7 @@ DocMergeCells[nb_NotebookObject, cellIdxs_List] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[deletedCount + 1] <> " セルを合併しました。",
          ToString[deletedCount + 1] <> " cells merged."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
   ];
 
@@ -4351,7 +4590,7 @@ DocExportMarkdown[nb_NotebookObject, opts:OptionsPattern[]] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["Markdown エクスポート完了: " <> outFile,
          "Markdown export complete: " <> outFile]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
 
     outFile
@@ -5015,7 +5254,7 @@ DocAutoInsertCitations[nb_NotebookObject] :=
           iL["自動引用: 引用を挿入中...", "Auto-cite: inserting citations..."]];
         iDocCiteCellChain[nb, enrichedDB, cellsWithRefs, 1,
           Function[],  fb];
-        RunScheduledTask[
+        iDocOneShotAfter[
           Module[{uncited},
             NBAccess`NBInvalidateCellsCache[nb];
             uncited = iDocFindUncitedKeys[nb, enrichedDB];
@@ -5028,13 +5267,13 @@ DocAutoInsertCitations[nb_NotebookObject] :=
                   iDocGenerateBibCell[nb, finalDB];
                   Quiet[CurrentValue[nb, WindowStatusArea] =
                     iL["自動引用完了", "Auto-cite done"]];
-                  RunScheduledTask[With[{pNb = nb},
+                  iDocOneShotAfter[With[{pNb = nb},
                     Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}]],
                 fb, paragraphs, paraIdxs],
               iDocGenerateBibCell[nb, enrichedDB];
               Quiet[CurrentValue[nb, WindowStatusArea] =
                 iL["自動引用完了", "Auto-cite done"]];
-              RunScheduledTask[With[{pNb = nb},
+              iDocOneShotAfter[With[{pNb = nb},
                 Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}]]],
           {3}]],
       fb]
@@ -5148,7 +5387,7 @@ DocExportLaTeX[nb_NotebookObject, opts:OptionsPattern[]] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["LaTeX エクスポート完了: " <> outFile,
          "LaTeX export complete: " <> outFile]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
 
     outFile
@@ -5205,7 +5444,7 @@ DocExportWord[nb_NotebookObject, opts:OptionsPattern[]] :=
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL["Word エクスポート完了: " <> docxFile,
            "Word export complete: " <> docxFile]];
-      RunScheduledTask[With[{pNb = nb},
+      iDocOneShotAfter[With[{pNb = nb},
         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {5}];
       docxFile,
       (* エラー *)
@@ -5324,6 +5563,11 @@ ShowDocPalette[] := (
         iDocButton2[iL["\[Times]計算", "\[Times]Cmp"],
           RGBColor[0.6, 0.35, 0.35], iDocDeleteComputeSelected[]]],
       iDocButtonRow[
+        iDocButton2[iL["修正", "Refine"],
+          RGBColor[0.4, 0.55, 0.55], iDocRefineSelected[]],
+        iDocButton2[iL["更新", "Polish"],
+          RGBColor[0.5, 0.4, 0.6], iDocPolishSelected[]]],
+      iDocButtonRow[
         iDocButton2[iL["分割", "Split"],
           RGBColor[0.5, 0.45, 0.35], iDocSplitCell[]],
         iDocButton2[iL["合併", "Merge"],
@@ -5400,16 +5644,26 @@ ShowDocPalette[] := (
 
       (* -- 設定 -- *)
       Style[iL[" 設定", " Settings"], Bold, 8, GrayLevel[0.3]],
+      (* Phase 28 (2026-05-12): Provider + Model の 2 ボタン化。
+         P ボタン: claudecode -> anthropic -> openai -> lmstudio 循環。
+         M ボタン: 現プロバイダの候補モデルを循環。
+         claudecode.wl Public API (Get/Set/Cycle PaletteProvider/Model) を使用。 *)
       Dynamic[
         Button[
-          Style[iL["モデル: ", "Model: "] <> iDocPaletteModelLabel[],
+          Style[iL["P: ", "P: "] <>
+            ClaudeCode`PaletteProviderLabel[ClaudeCode`GetPaletteProvider[]],
             9, Bold, GrayLevel[0.2]],
-          Module[{newModel},
-            newModel = Switch[ClaudeCode`GetPaletteModel[],
-              "default", "opus", "opus", "sonnet", "sonnet", "default", _, "default"];
-            ClaudeCode`SetPaletteModel[newModel];
-            ClaudeCode`SetPaletteEffort["medium"];
-            ClaudeCode`SavePaletteSettings[InputNotebook[]]],
+          (ClaudeCode`CyclePaletteProvider[];
+           ClaudeCode`SetPaletteEffort["medium"];
+           ClaudeCode`SavePaletteSettings[InputNotebook[]]),
+          Appearance -> "Frameless"]],
+      Dynamic[
+        Button[
+          Style[iL["M: ", "M: "] <>
+            ClaudeCode`PaletteShortenModelName[ClaudeCode`GetPaletteModelName[]],
+            9, Bold, GrayLevel[0.2]],
+          (ClaudeCode`CyclePaletteModel[];
+           ClaudeCode`SavePaletteSettings[InputNotebook[]]),
           Appearance -> "Frameless"]],
       Dynamic[
         Button[
@@ -5561,7 +5815,7 @@ DocCompute[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL["切替でプロンプトに戻してから計算してください。",
            "Toggle to prompt view before re-computing."]];
-      RunScheduledTask[With[{pNb = nb},
+      iDocOneShotAfter[With[{pNb = nb},
         Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
       Return[$Failed]];
 
@@ -5624,13 +5878,16 @@ DocCompute[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
             NBAccess`NBCellSetTaggingRule[nb2, idx,
               {$iDocTagRoot, "syncTag"}, Inherited];
             Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
-            RunScheduledTask[With[{pNb = nb2},
+            iDocOneShotAfter[With[{pNb = nb2},
               Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]],
         nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
     NBAccess`NBSelectCell[nb, cellIdx];
   ];
 
 iDocComputeSelected[] :=
+  iDocEntryDeferred[iDocComputeSelectedImpl[]];
+
+iDocComputeSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -5647,7 +5904,7 @@ iDocComputeSelectedChain[nb_, idxs_, pos_, fb_] :=
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL[ToString[Length[idxs]] <> " セルのコードを生成しました。",
          ToString[Length[idxs]] <> " cells computed."]];
-    RunScheduledTask[With[{pNb = nb},
+    iDocOneShotAfter[With[{pNb = nb},
       Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["コード生成中: ", "Computing: "] <>
@@ -5656,13 +5913,16 @@ iDocComputeSelectedChain[nb_, idxs_, pos_, fb_] :=
       If[iDocIsMetaCell[nb, cellIdx],
         iDocComputeSelectedChain[nb, idxs, pos + 1, fb],
         DocCompute[nb, cellIdx, Fallback -> fb];
-        RunScheduledTask[
+        iDocOneShotAfter[
           With[{pNb = nb, is = idxs, p = pos, f = fb},
             iDocComputeSelectedChain[pNb, is, p + 1, f]], {2}]]]
   ];
 
 (* 選択セルから計算結果を削除し、プロンプト状態に復元する *)
 iDocDeleteComputeSelected[] :=
+  iDocEntryDeferred[iDocDeleteComputeSelectedImpl[]];
+
+iDocDeleteComputeSelectedImpl[] :=
   Module[{nb, cellIdxs},
     {nb, cellIdxs} = iDocResolveTargetCells[];
     If[Length[cellIdxs] === 0,
@@ -5728,6 +5988,328 @@ iDocWriteCodeAndTrack[nb_NotebookObject, cellIdx_Integer, code_String] :=
 
 
 
+
+(* ============================================================
+   コア関数: 修正 (DocRefine) と 更新 (DocPolish)
+
+   - 修正(Refine): 文法的・表現上の不自然さを最小限の修正で訂正。
+                   元の意味・構成・文体・トーンを完全に保持する。
+   - 更新(Polish): 内容（情報・主旨・意図）は保持しつつ、
+                   文の構成や言い回しを必要に応じて大きく変更。
+
+   どちらも:
+   - Directive/Dictionary セルの指示を必ずプロンプトに含める。
+   - 対象: paragraph, translated（翻訳表示中も含む）, 通常テキストセル。
+   - 対象外: idea モード、compute モード、メタセル。
+   - 翻訳付きセル（モード paragraph, 翻訳保存あり）は、
+     本文修正後に翻訳も連鎖更新（DocExpandIdea のパラグラフ更新と同パターン）。
+   - 翻訳表示中（mode = "translated", showTrans = True）の場合は
+     翻訳テキストを直接修正し、$iDocTagTranslation も更新する。
+   - セルアクセスは全て NBAccess 経由（プライバシー規約遵守）。
+   ============================================================ *)
+
+(* ---- プロンプト関数 ---- *)
+
+iDocRefinePromptFn[text_String, context_String:""] :=
+  context <>
+  iL[
+    "あなたは熟練した校正者です。以下のテキストを校正してください。\n" <>
+    "ルール（優先度の高い順）:\n" <>
+    "- 【最優先】Directives（指示）が提供されている場合は、その内容を厳守する。" <>
+    "現在のテキストが Directives に違反している場合は必ず修正する。\n" <>
+    "- Dictionary（辞書）が提供されている場合は、その用語対応を必ず使用する。\n" <>
+    "- 文法的な誤り、表現上の不自然さ、誤字脱字を最小限の修正で訂正する。\n" <>
+    "- 元の意味、内容、主張、構成、文体、トーンを完全に保持する。\n" <>
+    "- Directives で指定されていない範囲では、必要最小限の変更のみ行う。\n" <>
+    "- 修正の必要がない箇所はそのままにする。\n" <>
+    "- 出力言語: 入力テキストと同じ言語\n" <>
+    "- 前後の文脈を考慮するが、文書全体の流れに合うかは「修正」では判断材料に留める。\n" <>
+    "- 【最重要】校正後のテキスト本文のみを出力すること。" <>
+    "「Let me」「まず」「修正版:」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
+    "出力の最初の文字から最後の文字まですべてが校正後のテキストでなければならない。\n" <>
+    "- マークダウン記法は使わない。\n" <>
+    "- リクエストを実行できない場合は、テキストではなく [ERROR]: に続けて理由を出力する。\n\n" <>
+    "テキスト:\n" <> text,
+    "You are a skilled editor. Proofread the following text.\n" <>
+    "Rules (in priority order):\n" <>
+    "- [HIGHEST PRIORITY] If Directives are provided, strictly follow them. " <>
+    "If the current text violates the Directives, you MUST correct it.\n" <>
+    "- If a Dictionary is provided, ALWAYS use the specified term mappings.\n" <>
+    "- Correct grammatical errors, unnatural expressions, and typos with MINIMAL changes.\n" <>
+    "- Preserve the original meaning, content, claims, structure, style, and tone exactly.\n" <>
+    "- For aspects NOT specified by Directives, make only the necessary minimum changes.\n" <>
+    "- Leave parts that need no correction unchanged.\n" <>
+    "- Output language: same as input text\n" <>
+    "- Consider surrounding context for reference, but do not restructure for document flow.\n" <>
+    "- CRITICAL: Output ONLY the corrected text body. " <>
+    "Do NOT include any preamble, thinking, meta-commentary, or labels " <>
+    "such as 'Let me...', 'Here is the corrected version:', etc. " <>
+    "The very first character of your output must be the start of the corrected text.\n" <>
+    "- Do not use markdown formatting.\n" <>
+    "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason.\n\n" <>
+    "Text:\n" <> text
+  ];
+
+iDocPolishPromptFn[text_String, context_String:""] :=
+  context <>
+  iL[
+    "あなたは熟練したライターです。以下のテキストをより完璧な形に磨き上げてください。\n" <>
+    "ルール（優先度の高い順）:\n" <>
+    "- 【最優先】Directives（指示）が提供されている場合は、その内容を厳守する。" <>
+    "現在のテキストが Directives に違反している場合は必ず修正する。" <>
+    "Directives が文体・トーン・話し方（例: ですます調、である調、敬語等）・" <>
+    "表記規則を指定している場合は、現在の文体を破棄して Directives の指定に合わせる。\n" <>
+    "- Dictionary（辞書）が提供されている場合は、その用語対応を必ず使用する。\n" <>
+    "- 内容（情報・主旨・意図・主張）は完全に保持する。情報を追加したり削除したりしない。\n" <>
+    "- 内容が正しい範囲では、文の構成、段落の組み立て、言い回し、表現は必要に応じて大きく変更してよい。\n" <>
+    "- より明確で、読みやすく、プロフェッショナルな文章にする。\n" <>
+    "- 冗長な箇所は簡潔にし、不明瞭な箇所は明確にし、論理の流れを整える。\n" <>
+    "- 出力言語: 入力テキストと同じ言語\n" <>
+    "- 前後の文脈を考慮して、文書全体の流れに合った文章にする。\n" <>
+    "- 【最重要】磨き上げたテキスト本文のみを出力すること。" <>
+    "「Let me」「まず」「改訂版:」等の前置き、思考過程、説明、メタコメントは絶対に含めない。" <>
+    "出力の最初の文字から最後の文字まですべてが本文でなければならない。\n" <>
+    "- マークダウン記法は使わない。\n" <>
+    "- リクエストを実行できない場合は、テキストではなく [ERROR]: に続けて理由を出力する。\n\n" <>
+    "テキスト:\n" <> text,
+    "You are a skilled writer. Polish the following text into a more refined form.\n" <>
+    "Rules (in priority order):\n" <>
+    "- [HIGHEST PRIORITY] If Directives are provided, strictly follow them. " <>
+    "If the current text violates the Directives, you MUST correct it. " <>
+    "If Directives specify a style, tone, voice, register, or writing convention, " <>
+    "DISCARD the current style and conform to the Directives.\n" <>
+    "- If a Dictionary is provided, ALWAYS use the specified term mappings.\n" <>
+    "- Preserve the content (information, main point, intent, claims) completely. " <>
+    "Do not add or remove information.\n" <>
+    "- Where the content is correct, feel free to substantially change " <>
+    "sentence structure, paragraph organization, phrasing, and expression.\n" <>
+    "- Make the text clearer, more readable, and more professional.\n" <>
+    "- Streamline verbose passages, clarify unclear parts, improve logical flow.\n" <>
+    "- Output language: same as input text\n" <>
+    "- Consider the surrounding context to fit the overall document flow.\n" <>
+    "- CRITICAL: Output ONLY the polished text body. " <>
+    "Do NOT include any preamble, thinking, meta-commentary, or labels " <>
+    "such as 'Let me...', 'Here is the polished version:', etc. " <>
+    "The very first character of your output must be the start of the polished text.\n" <>
+    "- Do not use markdown formatting.\n" <>
+    "- If you cannot fulfill the request, output ONLY: [ERROR]: followed by the reason.\n\n" <>
+    "Text:\n" <> text
+  ];
+
+(* ---- 共通実行ロジック ----
+   修正と更新は対象テキストの取り扱いが共通なので、プロンプト関数だけを
+   差し替える共通関数を実装する。modeName はステータス表示用ラベル。 *)
+
+iDocRefineOrPolish[nb_NotebookObject, cellIdx_Integer,
+    promptBuilder_, modeName_String, useFallback:(True|False)] :=
+  Module[{mode, showTrans, currentText,
+          directives, dictionary, context, prompt, privLevel, savedScroll,
+          targetForTranslationUpdate},
+
+    (* メタセルは対象外 *)
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
+
+    NBAccess`NBInvalidateCellsCache[nb];
+    mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+    showTrans = TrueQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation]];
+
+    (* idea モード / compute モードは対象外
+       - idea: アイデアメモであり、文法校正の対象として不適切
+       - compute: コードのため文章校正と無関係 *)
+    If[mode === "idea",
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["アイデアモードのセルは" <> modeName <> "の対象外です。",
+           "Idea-mode cells are not subject to " <> modeName <> "."]];
+      iDocOneShotAfter[With[{pNb = nb},
+        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
+      Return[$Failed]];
+    If[mode === "compute",
+      Quiet[CurrentValue[nb, WindowStatusArea] =
+        iL["計算モードのセルは" <> modeName <> "の対象外です。",
+           "Compute-mode cells are not subject to " <> modeName <> "."]];
+      iDocOneShotAfter[With[{pNb = nb},
+        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}];
+      Return[$Failed]];
+
+    (* 自動スクロール無効化 *)
+    savedScroll = Quiet[AbsoluteCurrentValue[nb, NotebookAutoScroll]];
+    Quiet[SetOptions[nb, NotebookAutoScroll -> False]];
+
+    (* 現在のセルテキスト（モードに関わらず表示中のもの） *)
+    currentText = NBAccess`NBCellGetText[nb, cellIdx];
+    If[!StringQ[currentText] || StringTrim[currentText] === "",
+      Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+      Return[$Failed]];
+
+    (* コンテキスト収集: 指示・辞書を必ず含める *)
+    directives = iDocCollectDirectives[nb];
+    dictionary = iDocCollectDictionary[nb];
+    context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
+    prompt = promptBuilder[currentText, context];
+
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
+
+    (* 翻訳表示中(mode="translated", showTrans=True) の場合は翻訳を直接更新する。
+       それ以外は本文を更新し、保存翻訳があれば連鎖更新する。 *)
+    targetForTranslationUpdate = (mode === "translated") && showTrans;
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[modeName <> "中...", modeName <> "..."]];
+    iDocSetJobAnchorCell[nb, cellIdx];
+
+    With[{nb2 = nb, ci = cellIdx, ss = savedScroll, fb = useFallback,
+          mn = modeName, isTransUpdate = targetForTranslationUpdate},
+      NBAccess`$NBLLMQueryFunc[prompt,
+        Function[response,
+          Module[{trimmed},
+            NBAccess`NBInvalidateCellsCache[nb2];
+            If[StringQ[response] && !StringStartsQ[response, "Error"] &&
+               !StringStartsQ[response, "[ERROR]"],
+              trimmed = StringTrim[response];
+              (* セル本文を更新（編集追跡付き） *)
+              iDocWriteAndTrack[nb2, ci, trimmed];
+
+              If[isTransUpdate,
+                (* 翻訳表示中だった場合: 保存翻訳も更新 *)
+                NBAccess`NBCellSetTaggingRule[nb2, ci,
+                  $iDocTagTranslation, trimmed];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL[mn <> "完了", mn <> " complete"]];
+                NBAccess`NBSelectCell[nb2, ci];
+                Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                iDocOneShotAfter[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
+                (* それ以外: 本文更新後、翻訳保存があれば連鎖更新 *)
+                Module[{trans, tl, oldTrans, idea2, ctx2, dict2, dir2},
+                  trans = NBAccess`NBCellGetTaggingRule[nb2, ci, $iDocTagTranslation];
+                  If[StringQ[trans] && StringTrim[trans] =!= "",
+                    tl = iDocTranslationTargetForText[trimmed];
+                    oldTrans = trans;
+                    idea2 = NBAccess`NBCellGetTaggingRule[nb2, ci, $iDocTagAlternate];
+                    If[!StringQ[idea2], idea2 = ""];
+                    dir2 = iDocCollectDirectives[nb2];
+                    dict2 = iDocCollectDictionary[nb2];
+                    ctx2 = dir2 <> dict2 <> iDocCollectContext[nb2, ci];
+                    NBAccess`$NBLLMQueryFunc[
+                      iDocReTranslatePromptFn[trimmed, tl, oldTrans, idea2, ctx2],
+                      Function[tResponse,
+                        If[StringQ[tResponse] && !StringStartsQ[tResponse, "Error"] &&
+                           !StringStartsQ[tResponse, "[ERROR]"],
+                          NBAccess`NBCellSetTaggingRule[nb2, ci,
+                            $iDocTagTranslation, StringTrim[tResponse]];
+                          NBAccess`NBCellSetTaggingRule[nb2, ci,
+                            $iDocTagTranslationSrc, trimmed]];
+                        Quiet[CurrentValue[nb2, WindowStatusArea] =
+                          iL[mn <> "完了", mn <> " complete"]];
+                        NBAccess`NBSelectCell[nb2, ci];
+                        Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                        iDocOneShotAfter[With[{pNb = nb2},
+                          Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+                      nb2, PrivacyLevel -> NBAccess`NBCellPrivacyLevel[nb2, ci],
+                      Fallback -> fb],
+                    (* 翻訳なし: 完了 *)
+                    Quiet[CurrentValue[nb2, WindowStatusArea] =
+                      iL[mn <> "完了", mn <> " complete"]];
+                    NBAccess`NBSelectCell[nb2, ci];
+                    Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                    iDocOneShotAfter[With[{pNb = nb2},
+                      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
+              (* エラー *)
+              Quiet[CurrentValue[nb2, WindowStatusArea] =
+                iL[mn <> "エラー", mn <> " error"]];
+              NBAccess`NBSelectCell[nb2, ci];
+              Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+              iDocOneShotAfter[With[{pNb = nb2},
+                Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]],
+        nb, PrivacyLevel -> privLevel, Fallback -> useFallback]];
+
+    (* 非同期呼び出し直後にセル選択を復元 *)
+    NBAccess`NBSelectCell[nb, cellIdx];
+  ];
+
+DocRefine[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
+  iDocRefineOrPolish[nb, cellIdx,
+    iDocRefinePromptFn,
+    iL["修正", "Refine"],
+    TrueQ[OptionValue[Fallback]]];
+
+DocPolish[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
+  iDocRefineOrPolish[nb, cellIdx,
+    iDocPolishPromptFn,
+    iL["更新", "Polish"],
+    TrueQ[OptionValue[Fallback]]];
+
+(* ---- パレット呼び出し ---- *)
+
+iDocRefineSelected[] :=
+  iDocEntryDeferred[iDocRefineSelectedImpl[]];
+
+iDocRefineSelectedImpl[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    If[Length[cellIdxs] === 1,
+      DocRefine[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]];
+      NBAccess`NBSelectCell[nb, First[cellIdxs]],
+      iDocRefineSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
+  ];
+
+iDocRefineSelectedChain[nb_, idxs_, pos_, fb_] :=
+  If[pos > Length[idxs],
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[ToString[Length[idxs]] <> " セルを修正しました。",
+         ToString[Length[idxs]] <> " cells refined."]];
+    iDocOneShotAfter[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["修正中: ", "Refining: "] <>
+        ToString[pos] <> "/" <> ToString[Length[idxs]]];
+    Module[{cellIdx = idxs[[pos]], mode},
+      mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+      If[iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
+        iDocRefineSelectedChain[nb, idxs, pos + 1, fb],
+        DocRefine[nb, cellIdx, Fallback -> fb];
+        iDocOneShotAfter[
+          With[{pNb = nb, is = idxs, p = pos, f = fb},
+            iDocRefineSelectedChain[pNb, is, p + 1, f]], {2}]]]
+  ];
+
+iDocPolishSelected[] :=
+  iDocEntryDeferred[iDocPolishSelectedImpl[]];
+
+iDocPolishSelectedImpl[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    If[Length[cellIdxs] === 1,
+      DocPolish[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]];
+      NBAccess`NBSelectCell[nb, First[cellIdxs]],
+      iDocPolishSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
+  ];
+
+iDocPolishSelectedChain[nb_, idxs_, pos_, fb_] :=
+  If[pos > Length[idxs],
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL[ToString[Length[idxs]] <> " セルを更新しました。",
+         ToString[Length[idxs]] <> " cells polished."]];
+    iDocOneShotAfter[With[{pNb = nb},
+      Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}],
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["更新中: ", "Polishing: "] <>
+        ToString[pos] <> "/" <> ToString[Length[idxs]]];
+    Module[{cellIdx = idxs[[pos]], mode},
+      mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+      If[iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
+        iDocPolishSelectedChain[nb, idxs, pos + 1, fb],
+        DocPolish[nb, cellIdx, Fallback -> fb];
+        iDocOneShotAfter[
+          With[{pNb = nb, is = idxs, p = pos, f = fb},
+            iDocPolishSelectedChain[pNb, is, p + 1, f]], {2}]]]
+  ];
 
 End[];
 EndPackage[];
