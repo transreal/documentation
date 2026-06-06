@@ -680,6 +680,9 @@ iDocExpandPromptFn[ideaText_String, context_String:""] :=
     "- Directives（指示）が提供されている場合は、その内容を厳守して生成する\n" <>
     "- Dictionary（辞書）が提供されている場合は、翻訳時にその用語対応を必ず使用する\n" <>
     "- 前後の文脈を考慮して、文書全体の流れに合った段落を生成する\n" <>
+    "- 人名・所属・専門用語・年号・事実関係は正確であること。" <>
+    "web検索ツール等の情報源が利用可能な場合は、不確実な固有名詞や事実を" <>
+    "必ず検索して裏取りしてから記述し、推測や捏造を避ける\n" <>
     "- アタッチされた資料がコンテキストに含まれる場合は参照してよいが、" <>
     "資料を読む過程（「PDFを読みます」等）は絶対に出力に含めない\n" <>
     "- リクエストを実行できない場合（ファイル未検出・情報不足等）は、段落ではなく [ERROR]: に続けて理由を出力する\n\n" <>
@@ -699,6 +702,9 @@ iDocExpandPromptFn[ideaText_String, context_String:""] :=
     "- If Directives are provided, strictly follow their instructions\n" <>
     "- If a Dictionary is provided, always use the specified term mappings when translating\n" <>
     "- Consider the surrounding context to produce a paragraph that fits the overall document flow\n" <>
+    "- Names, affiliations, technical terms, dates, and factual claims must be accurate. " <>
+    "If web search tools or other sources are available, you MUST search to verify " <>
+    "uncertain proper nouns and facts before writing, and avoid guessing or fabrication\n" <>
     "- If attached files are mentioned in context, use their content but NEVER output " <>
     "your reading process (e.g. 'Let me read the PDF')\n" <>
     "- If you cannot fulfill the request (file not found, insufficient info, etc.), output ONLY: [ERROR]: followed by the reason\n\n" <>
