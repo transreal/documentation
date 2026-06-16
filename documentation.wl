@@ -323,6 +323,14 @@ $iDocTagFigCaption = {$iDocTagRoot, "figCaption"};
 $iDocTagCleanText = {$iDocTagRoot, "cleanText"};
 $iDocTagCleanMode = {$iDocTagRoot, "cleanMode"};
 $iDocTagRefSources = {$iDocTagRoot, "refSources"};
+(* 図清書 (Figure clean-up / 清書): 手書き図 ↔ ベクター清書図 の切替用。
+   figOutline   : 元の手書き図セル内容 (Compress 文字列)
+   figCleanBoxes: 清書後の Graphics ボックス (BoxData, Compress 文字列)
+   figCleanCode : 清書時に LLM が生成した Graphics コード (再編集/参照用)
+   モード値は $iDocTagMode に "figClean" / "figOutline" を格納する。 *)
+$iDocTagFigOutline = {$iDocTagRoot, "figOutline"};
+$iDocTagFigCleanBoxes = {$iDocTagRoot, "figCleanBoxes"};
+$iDocTagFigCleanCode = {$iDocTagRoot, "figCleanCode"};
 
 (* ============================================================
    パレット状態
@@ -1050,6 +1058,14 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
     NBAccess`NBInvalidateCellsCache[nb];
     mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
     showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
+
+    (* ========================================================
+       図清書モード: figClean ↔ figOutline (手書き ↔ 清書済み)
+       図はテキストではないため編集検出フローを経由せず専用処理する。
+       ======================================================== *)
+    If[mode === "figClean" || mode === "figOutline",
+      iDocToggleFigureClean[nb, cellIdx, mode];
+      Return[]];
 
     (* 編集検出: cleanText と現在テキストを比較。
        cleanMode が現在のモードと一致する場合のみ編集ありと判定する。
@@ -5569,6 +5585,11 @@ ShowDocPalette[] := (
         iDocButton2[iL["\[Times]計算", "\[Times]Cmp"],
           RGBColor[0.6, 0.35, 0.35], iDocDeleteComputeSelected[]]],
       iDocButtonRow[
+        iDocButton2[iL["清書(図)", "Clean(F)"],
+          RGBColor[0.45, 0.55, 0.4], iDocCleanFigureSelected[]],
+        iDocButton2[iL["\[Times]清書", "\[Times]Cln"],
+          RGBColor[0.6, 0.35, 0.35], iDocDeleteCleanFigureSelected[]]],
+      iDocButtonRow[
         iDocButton2[iL["修正", "Refine"],
           RGBColor[0.4, 0.55, 0.55], iDocRefineSelected[]],
         iDocButton2[iL["更新", "Polish"],
@@ -5593,18 +5614,17 @@ ShowDocPalette[] := (
           RGBColor[0.35, 0.65, 0.65], iDocInsertDictionaryAction[]],
         iDocButton2[iL["文献", "Bib"],
           RGBColor[0.4, 0.45, 0.6], iDocInsertBibliographyAction[]]],
-      iDocButton[iL["\[FilledSmallSquare] 図メタ", "\[FilledSmallSquare] Fig Meta"],
-        RGBColor[0.5, 0.5, 0.4],
-        iDocEditFigureMetaAction[]],
-      iDocButton[iL["\[RightPointer] 参照挿入", "\[RightPointer] Ref Insert"],
-        RGBColor[0.45, 0.45, 0.55],
-        iDocInsertReferenceAction[]],
-      iDocButton[iL["\[FilledSmallSquare] 依存資料", "\[FilledSmallSquare] Ref Src"],
-        RGBColor[0.45, 0.4, 0.5],
-        iDocEditRefSourcesAction[]],
-      iDocButton[iL["\[RightPointer] 自動引用", "\[RightPointer] Auto Cite"],
-        RGBColor[0.4, 0.4, 0.6],
-        iDocAutoInsertCitationsAction[]],
+      (* 図メタ〜自動引用は2列化して縦の余白を作る (清書ボタン追加分の確保) *)
+      iDocButtonRow[
+        iDocButton2[iL["図メタ", "Fig Meta"],
+          RGBColor[0.5, 0.5, 0.4], iDocEditFigureMetaAction[]],
+        iDocButton2[iL["参照挿入", "Ref Ins"],
+          RGBColor[0.45, 0.45, 0.55], iDocInsertReferenceAction[]]],
+      iDocButtonRow[
+        iDocButton2[iL["依存資料", "Ref Src"],
+          RGBColor[0.45, 0.4, 0.5], iDocEditRefSourcesAction[]],
+        iDocButton2[iL["自動引用", "Auto Cite"],
+          RGBColor[0.4, 0.4, 0.6], iDocAutoInsertCitationsAction[]]],
       Spacer[1],
 
       (* -- 一括表示切替 -- *)
@@ -5989,6 +6009,871 @@ iDocWriteCodeAndTrack[nb_NotebookObject, cellIdx_Integer, code_String] :=
     NBAccess`NBSelectCell[nb, cellIdx];
     Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]]];
 
+(* ============================================================
+   コア関数: 図清書 (Figure clean-up / 清書)
+   ------------------------------------------------------------
+   手書きの図セルをラスタライズしてビジョン対応 LLM に渡し、
+   清書済みのベクター図 (Wolfram Graphics) を再構成する。
+   - 可能な限り Graphics プリミティブ (ベクター) で生成。
+   - 生成コードが図にならなければビットマップ (Image) も許容。
+   - 元の手書き図と清書図はセル切替 (DocToggleView) で往復できる。
+   ★ マルチモーダル送信には課金 API (画像対応モデル) が必須。
+     パレット設定の「課金API: 許可」が前提。
+   ============================================================ *)
+
+(* 清書表示中のセル: 左に緑のフレーム *)
+$iDocCleanFigCellOpts = {
+  CellFrame      -> {{3, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.45, 0.55, 0.4]
+};
+(* 手書き表示中 (清書済みセル) のセル: 左に黄土色のフレーム *)
+$iDocOutlineFigCellOpts = {
+  CellFrame      -> {{3, 0}, {0, 0}},
+  CellFrameColor -> RGBColor[0.65, 0.55, 0.3]
+};
+
+(* セルの内容部 (Cell の第1引数) を取得する。失敗時は $Failed。 *)
+iDocReadCellContent[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{expr},
+    expr = NBAccess`NBCellRead[nb, cellIdx];
+    If[MatchQ[expr, _Cell] && Length[expr] >= 1, First[expr], $Failed]];
+
+(* TaggingRules に Compress 文字列で保存された内容を復元する。失敗時は $Failed。 *)
+iDocGetCompressedTag[nb_NotebookObject, cellIdx_Integer, tag_] :=
+  Module[{v},
+    v = NBAccess`NBCellGetTaggingRule[nb, cellIdx, tag];
+    If[StringQ[v], Quiet @ Check[Uncompress[v], $Failed], $Failed]];
+
+(* セルの内容部のみを置換する。スタイル・オプション・TaggingRules は保持。 *)
+iDocWriteCellContent[nb_NotebookObject, cellIdx_Integer, content_] :=
+  Module[{cell, expr, newExpr, savedScroll},
+    cell = NBAccess`NBResolveCell[nb, cellIdx];
+    If[cell === $Failed, Return[$Failed]];
+    savedScroll = Quiet[AbsoluteCurrentValue[nb, NotebookAutoScroll]];
+    Quiet[SetOptions[nb, NotebookAutoScroll -> False]];
+    expr = Quiet @ NotebookRead[cell];
+    newExpr = Replace[expr,
+      {Cell[_, rest___] :> Cell[content, rest],
+       _                :> Cell[content]}];
+    NotebookWrite[cell, newExpr, All, AutoScroll -> False];
+    NBAccess`NBInvalidateCellsCache[nb];
+    Quiet[SetOptions[nb, NotebookAutoScroll -> savedScroll]];
+    cellIdx];
+
+(* 図セルへの確定書き込み (タグ保存 + 内容差し替え + 枠 + ステータス) を
+   「新しい短い tick」に切り離して実行する。長い API 呼び出しを行った tick の中で
+   重いセル書き込みを同時に行うとフロントエンドの整形がデッドロックしやすいため、
+   書き込みだけを別 tick に逃がす。code が文字列なら figCleanCode も保存する。 *)
+iDocCommitFigure[nb_, cellIdx_, origContent_, cleanContent_, code_, doneMsg_String] :=
+  iDocOneShotAfter[
+    With[{nb2 = nb, ci = cellIdx, oc = origContent, cc = cleanContent,
+          cd = code, dm = doneMsg},
+      Quiet[
+        NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagFigOutline, Compress[oc]];
+        NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagFigCleanBoxes, Compress[cc]];
+        If[StringQ[cd],
+          NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagFigCleanCode, cd]];
+        NBAccess`NBCellSetTaggingRule[nb2, ci, $iDocTagMode, "figClean"];
+        iDocWriteCellContent[nb2, ci, cc];
+        NBAccess`NBCellSetOptions[nb2, ci, Sequence @@ $iDocCleanFigCellOpts];
+        NBAccess`NBSelectCell[nb2, ci];
+        CurrentValue[nb2, WindowStatusArea] = dm];
+      iDocOneShotAfter[With[{pNb = nb2},
+        Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]],
+    {0.15}];
+
+(* 生成式が図 (ベクター or ビットマップ) として表示可能か判定する。 *)
+iDocFigureBoxesQ[boxes_] :=
+  boxes =!= $Failed &&
+  ! FreeQ[boxes, _GraphicsBox | _Graphics3DBox | _RasterBox];
+
+(* LLM が Graphics コードでよく間違える関数名を決定的に補正する。
+   例: DropShadow → DropShadowing (末尾 ing が正)。これで描画時のメッセージを防ぐ。 *)
+iDocFixGraphicsCode[code_String] :=
+  StringReplace[code, RegularExpression["\\bDropShadow\\b"] -> "DropShadowing"];
+iDocFixGraphicsCode[x_] := x;
+
+(* 既定フォント: ClaudeCode`$ClaudeStandardFont (未定義なら Yu Gothic UI)。
+   日本語を含む図でも文字化け/豆腐にならないようにこのフォントを既定とする。 *)
+iDocStandardFont[] :=
+  With[{f = Quiet @ Check[ClaudeCode`$ClaudeStandardFont, $Failed]},
+    If[StringQ[f] && StringTrim[f] =!= "", f, "Yu Gothic UI"]];
+
+(* 図の最大表示幅 (px)。これを超える巨大 Graphics はフロントエンドの
+   整形が極端に重くなり、清書セル書き込み時にフリーズ/デッドロックの原因になる。
+   ここで上限を掛けて整形コストを有界にする。 *)
+$iDocFigureMaxWidth = 760;
+
+(* 生成した図に既定フォントを適用し、表示サイズに上限を掛ける。
+   Graphics/Graphics3D は BaseStyle の FontFamily を差し込み (既存 BaseStyle は保持、
+   FontFamily のみ上書き)、ImageSize を UpTo[$iDocFigureMaxWidth] に制限 (既存は上書き)。
+   それ以外 (Grid/Legended 等) は Style でフォントを与える。 *)
+iDocApplyFont[g_, font_String] :=
+  Module[{h = Head[g], prims, opts, bs},
+    If[h === Graphics || h === Graphics3D,
+      prims = First[g];
+      opts = Rest[List @@ g];
+      bs = Replace[
+        FirstCase[opts, HoldPattern[BaseStyle -> v_] :> v, {}],
+        {Automatic | None -> {}, r_Rule :> {r}, x_ /; ! ListQ[x] :> {x}}];
+      bs = Prepend[DeleteCases[bs, HoldPattern[FontFamily -> _]], FontFamily -> font];
+      h[prims, BaseStyle -> bs, ImageSize -> UpTo[$iDocFigureMaxWidth],
+        Sequence @@ DeleteCases[opts,
+          HoldPattern[BaseStyle -> _] | HoldPattern[ImageSize -> _]]],
+      (* それ以外 *)
+      Style[g, FontFamily -> font]]
+  ];
+
+(* 清書プロンプト: 手書き図をクリーンなベクター図に再構成させる *)
+iDocCleanFigurePromptFn[] :=
+  iL[
+    "添付画像は手書きで描かれたダイアグラム（四角形・矢印・テキストラベルなど）です。\n" <>
+    "これを清書し、きれいなダイアグラムを Wolfram Language の Graphics 式として再構成してください。\n" <>
+    "ルール:\n" <>
+    "- できる限りベクターのプリミティブ (Rectangle, Arrow, Line, Text, Disk, Circle, Polygon 等) を使う\n" <>
+    "- テキストラベルは画像内の文字を正確に保持する (例: \"LM Studio\", \"SourceVault\")\n" <>
+    "- 要素の配置・矢印の向き・接続関係を元の図に忠実に再現する\n" <>
+    "- 直線・直角・等間隔を整え、太さや色を統一して見やすくする\n" <>
+    "- EdgeForm/FaceForm/Style を使ってよいが、配色は控えめにする\n" <>
+    "- テキストに FontFamily は指定しない (既定の日本語対応フォントが自動適用される)\n" <>
+    "- 出力は単一の Graphics[...] 式のみ。そのまま評価可能であること\n" <>
+    "- 外部ファイル・未定義シンボル・Import 等は使わない (自己完結)\n" <>
+    "- 下に「EXTRACTED HINTS」がある場合、そのテキスト文字列・座標・配置を最優先(正)とする(画像より優先)\n" <>
+    "- マークダウン記法、コードフェンス (```)、説明文は一切含めない\n" <>
+    "- 最初の文字から最後の文字まで、すべてが Graphics 式でなければならない",
+    "The attached image is a hand-drawn diagram (rectangles, arrows, text labels, etc.).\n" <>
+    "Clean it up and reconstruct it as a tidy diagram expressed as a Wolfram Language Graphics expression.\n" <>
+    "Rules:\n" <>
+    "- Prefer vector primitives (Rectangle, Arrow, Line, Text, Disk, Circle, Polygon, etc.)\n" <>
+    "- Preserve text labels exactly as written in the image (e.g., \"LM Studio\", \"SourceVault\")\n" <>
+    "- Faithfully reproduce element placement, arrow directions, and connections\n" <>
+    "- Straighten lines, square up corners, even out spacing, and unify stroke/colors for clarity\n" <>
+    "- You may use EdgeForm/FaceForm/Style, but keep the palette subtle\n" <>
+    "- Do NOT set FontFamily on any text (a default CJK-capable font is applied automatically)\n" <>
+    "- Output a SINGLE Graphics[...] expression that is directly evaluable\n" <>
+    "- Do NOT use external files, undefined symbols, or Import (self-contained)\n" <>
+    "- If an 'EXTRACTED HINTS' section appears below, treat its text strings, coordinates, and layout as authoritative (over the image)\n" <>
+    "- Do NOT include markdown, code fences (```), or any explanation\n" <>
+    "- From the very first to the very last character, everything must be a Graphics expression"
+  ];
+
+(* 数値を座標表示用に短く整える *)
+iDocNumStr[x_] := If[NumericQ[x], ToString[N[Round[x, 0.01]]], ToString[x]];
+
+(* ストローク外接矩形を近接でクラスタリングし、各クラスタのインデックス群を返す。
+   bboxes: {{{xmin,xmax},{ymin,ymax}}, ...}, gap: 近接とみなす許容ギャップ。 *)
+iDocClusterBoxes[bboxes_List, gap_] :=
+  Module[{n = Length[bboxes], near, edges},
+    If[n === 0, Return[{}]];
+    If[n === 1, Return[{{1}}]];
+    near[i_, j_] := With[{bi = bboxes[[i]], bj = bboxes[[j]]},
+      bi[[1, 1]] - gap <= bj[[1, 2]] && bj[[1, 1]] - gap <= bi[[1, 2]] &&
+      bi[[2, 1]] - gap <= bj[[2, 2]] && bj[[2, 1]] - gap <= bi[[2, 2]]];
+    edges = Select[Subsets[Range[n], {2}], near[#[[1]], #[[2]]] &];
+    ConnectedComponents[Graph[Range[n], UndirectedEdge @@@ edges]]
+  ];
+
+(* GraphicsBox から清書の精度を上げる「抽出ヒント」テキストを作る。
+   - テキスト挿入の正確な文字列と位置 (打ち込み文字は OCR より確実)
+   - 全体の座標範囲
+   - ストロークを近接クラスタにまとめた外接矩形 (手書きの箱/矢印/文字に対応)
+   ラスタライズ画像と併用して LLM に渡す。図が無い/失敗時は "" を返す。 *)
+iDocExtractFigureHints[content_] :=
+  Quiet @ Check[
+  Module[{lines, ptlists, allpts, xr, yr, texts, bboxes, groups, clusterLines, span},
+    lines = Cases[content, LineBox[p_] :> p, Infinity];
+    ptlists = Map[
+      Function[p, Cases[
+        Replace[p, CompressedData[s_String] :> Uncompress[s]],
+        {a_?NumericQ, b_?NumericQ} :> {N[a], N[b]}, {0, Infinity}]],
+      lines];
+    ptlists = Select[ptlists, Length[#] > 0 &];
+    texts = Cases[content,
+      InsetBox[c_, pos : {_?NumericQ, _?NumericQ}, ___] :>
+        {FirstCase[c, Cell[t_String, ___] :> t,
+           FirstCase[c, t_String, "", Infinity], Infinity], N[pos]},
+      Infinity];
+    texts = Select[texts, StringQ[#[[1]]] && StringTrim[#[[1]]] =!= "" &];
+    If[Length[ptlists] === 0 && Length[texts] === 0, Return["", Module]];
+    allpts = Join @@ ptlists;
+    {xr, yr} = If[Length[allpts] > 0,
+      {MinMax[allpts[[All, 1]]], MinMax[allpts[[All, 2]]]}, {{0, 0}, {0, 0}}];
+    bboxes = Map[{MinMax[#[[All, 1]]], MinMax[#[[All, 2]]]} &, ptlists];
+    span = Max[xr[[2]] - xr[[1]], yr[[2]] - yr[[1]], 0.001];
+    groups = iDocClusterBoxes[bboxes, 0.06 * span];
+    clusterLines = MapIndexed[
+      Function[{g, idx}, Module[{bs = bboxes[[g]], cx, cy},
+        cx = MinMax[Flatten[bs[[All, 1]]]]; cy = MinMax[Flatten[bs[[All, 2]]]];
+        "  cluster" <> ToString[First[idx]] <> ": x[" <> iDocNumStr[cx[[1]]] <>
+          "," <> iDocNumStr[cx[[2]]] <> "] y[" <> iDocNumStr[cy[[1]]] <> "," <>
+          iDocNumStr[cy[[2]]] <> "] (" <> ToString[Length[g]] <> " strokes)"]],
+      groups];
+    "\n\n=== EXTRACTED HINTS (from the original Mathematica vector data \[Dash] authoritative) ===\n" <>
+    "Coordinate system: x in [" <> iDocNumStr[xr[[1]]] <> ", " <> iDocNumStr[xr[[2]]] <>
+      "], y in [" <> iDocNumStr[yr[[1]]] <> ", " <> iDocNumStr[yr[[2]]] <> "]\n" <>
+    If[Length[texts] > 0,
+      "Typed text labels (use these EXACT strings at ~these positions):\n" <>
+      StringRiffle[Map["  \"" <> #[[1]] <> "\" @ (" <> iDocNumStr[#[[2, 1]]] <>
+        ", " <> iDocNumStr[#[[2, 2]]] <> ")" &, texts], "\n"] <> "\n", ""] <>
+    If[Length[clusterLines] > 0,
+      "Stroke-cluster bounding boxes (ROUGH spatial groupings; touching elements may be merged \[Dash] " <>
+      "use only as region hints, and defer to the image for the exact shapes/count):\n" <>
+      StringRiffle[clusterLines, "\n"] <> "\n", ""] <>
+    "Keep the same overall layout, positions, and proportions as these coordinates. " <>
+    "The typed text labels above are exact; handwritten labels are NOT listed \[Dash] read those from the image."
+  ], ""];
+
+(* 直近の清書エラー全文を保持する (MessageDialog を出さずに後から確認できる)。
+   確認: Documentation`Private`$iDocLastFigError *)
+$iDocLastFigError = "";
+
+(* 清書で使う Anthropic モデル ID の手動上書き。"" なら自動判定。
+   自動判定が外す場合に Documentation`Private`$iDocCleanFigureModel = "claude-..." で固定できる。 *)
+$iDocCleanFigureModel = "";
+
+(* 「更新」ボタンで図を高品質化する方法のスイッチ:
+   "gptimage" : OpenAI gpt-image-1 の img2img。現在の図を画像として送り、影/装飾を加えて
+                再生成する (ラスター画像)。要 SystemCredential["OPENAI_API_KEY"]。
+   "vector"   : Anthropic で DropShadowing 等を加えた Graphics を再生成 (ベクター保持・新キー不要)。
+   "dalle"    : OpenAI dall-e-3。図の説明文から新規生成 (ラスター・元図とは別物)。要 OPENAI_API_KEY。
+   既定は "vector"。ダイアグラムでは最も綺麗(文字くっきり・影/角丸)で速く、カーネルも固まらない。
+   gptimage/dalle は同期の長い画像生成呼び出しのため処理中カーネルがブロックする点に注意。
+   変更例: Documentation`Private`$iDocFigurePolishMethod = "gptimage"; *)
+$iDocFigurePolishMethod = "vector";
+
+(* vector 更新のスタイル設定 (Documentation`Private` で変更可) *)
+(* 配色テーマ: "auto"|"pastel"|"monotone"|"vivid"|"blueprint"|"warm"|"cool" *)
+$iDocPolishColorTheme = "auto";
+(* 影の強さ: "none"|"subtle"|"medium"|"strong" *)
+$iDocPolishShadow = "subtle";
+(* 角丸: "none"|"small"|"medium"|"large" *)
+$iDocPolishRounding = "medium";
+(* 生成する案の数 (1=単一, 2〜4=複数案を出してダイアログで選択)。複数案は案数ぶん時間がかかる。 *)
+$iDocPolishVariants = 1;
+
+(* ステータスバーにメッセージを表示し、secs 秒後に消す。MessageDialog と違い
+   フォーカスを奪わない (= パレットが他ウィンドウから設定を再読込して
+   「課金API」表示が一瞬「禁止」に化ける現象を避ける)。 *)
+iDocFigStatus[nb_, msg_String, secs_:6] := (
+  Quiet[CurrentValue[nb, WindowStatusArea] = msg];
+  iDocOneShotAfter[With[{pNb = nb},
+    Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {secs}];);
+
+(* プロンプト(+任意の画像)を Anthropic Messages API に送信し、応答テキストを返す。
+   LLMSynthesize は使わず、パッケージと同じ NBGetAPIKey["anthropic"] のキーで直接呼ぶ。
+   img が Image なら画像ブロックを付けてマルチモーダル送信、None ならテキストのみ。
+   送信するのは「この内容」だけ (セッション添付を巻き込まない)。失敗時は "Error: <理由>"。 *)
+iDocAnthropicLLM[promptText_String, img_:None] :=
+  Module[{key, model, allModels, b64, content, body, json, resp, status, bodyText, parsed, text},
+    key = Quiet @ Check[
+      NBAccess`NBGetAPIKey["anthropic", PrivacySpec -> <|"AccessLevel" -> 1.0|>], $Failed];
+    If[! StringQ[key] || StringTrim[key] === "", Return["Error: NOKEY"]];
+    (* モデル: 手動上書きがあれば優先。無ければフォールバックモデル登録から
+       実モデル ID を構造に依らず1つ拾う。Anthropic のモデル ID は必ず "claude-..."
+       (ハイフン付き)。"claudecode"/"claude" 等のプロバイダ名は除外する。既定 claude-opus-4-6。 *)
+    If[StringQ[$iDocCleanFigureModel] && StringTrim[$iDocCleanFigureModel] =!= "",
+      model = StringTrim[$iDocCleanFigureModel],
+      allModels = Quiet @ Check[NBAccess`NBGetAvailableFallbackModels[0.0], {}];
+      model = SelectFirst[
+        Cases[allModels, _String, Infinity],
+        StringStartsQ[ToLowerCase[#], "claude-"] &,
+        "claude-opus-4-6"]];
+    If[! StringQ[model] || StringTrim[model] === "", model = "claude-opus-4-6"];
+    content = If[ImageQ[img],
+      b64 = Quiet @ Check[BaseEncode[ExportByteArray[img, "PNG"]], $Failed];
+      If[! StringQ[b64], Return["Error: ENCODE"]];
+      {<|"type" -> "image",
+         "source" -> <|"type" -> "base64",
+           "media_type" -> "image/png", "data" -> b64|>|>,
+       <|"type" -> "text", "text" -> promptText|>},
+      {<|"type" -> "text", "text" -> promptText|>}];
+    body = <|
+      "model" -> model,
+      "max_tokens" -> 8192,
+      "messages" -> {<|"role" -> "user", "content" -> content|>}
+    |>;
+    (* ExportString[_,"RawJSON"] は非ASCIIをバイト列文字として吐き、後段の
+       StringToByteArray["UTF8"] で二重エンコードされ日本語が壊れる。
+       Developer`WriteRawJSONString は適正な Unicode 文字列を返す。 *)
+    json = Quiet @ Check[Developer`WriteRawJSONString[body], $Failed];
+    If[! StringQ[json], Return["Error: JSON"]];
+    resp = Quiet @ Check[
+      URLRead[HTTPRequest["https://api.anthropic.com/v1/messages",
+        <|"Method" -> "POST",
+          "Headers" -> {"x-api-key" -> key, "anthropic-version" -> "2023-06-01"},
+          "ContentType" -> "application/json",
+          "Body" -> StringToByteArray[json, "UTF8"]|>],
+        {"StatusCode", "BodyByteArray"}, TimeConstraint -> 300], $Failed];
+    If[resp === $Failed, Return["Error: HTTP request failed (timeout/network)"]];
+    status = resp[[1]]; bodyText = resp[[2]];
+    (* 応答は BodyByteArray で受け取り、必ず UTF-8 として復号する
+       (URLRead の "Body" は応答の charset 推定を誤り日本語が文字化けするため) *)
+    If[ByteArrayQ[bodyText],
+      bodyText = Quiet @ Check[ByteArrayToString[bodyText, "UTF-8"], bodyText]];
+    If[! StringQ[bodyText], bodyText = ToString[bodyText]];
+    If[status =!= 200,
+      Return["Error: HTTP " <> ToString[status] <> " " <> StringTake[bodyText, UpTo[500]]]];
+    (* パッケージと同じ JSON パーサを使用。連想で無ければ規則リストを連想化。 *)
+    parsed = Quiet @ Check[Developer`ReadRawJSONString[bodyText], $Failed];
+    If[parsed === $Failed,
+      parsed = Quiet @ Check[ImportString[bodyText, "RawJSON"], $Failed]];
+    If[MatchQ[parsed, {___Rule}], parsed = Association[parsed]];
+    If[! AssociationQ[parsed],
+      Return["Error: response parse failed; body[1..600]: " <> StringTake[bodyText, UpTo[600]]]];
+    text = Quiet @ Check[
+      StringJoin[Cases[Lookup[parsed, "content", {}],
+        a_Association /; Lookup[a, "type", ""] === "text" :> Lookup[a, "text", ""]]],
+      $Failed];
+    If[! StringQ[text] || StringTrim[text] === "",
+      Return["Error: empty/parse mismatch; body[1..600]: " <> StringTake[bodyText, UpTo[600]]]];
+    text
+  ];
+
+(* 1セルを清書する (同期: マルチモーダルは Anthropic API 直接呼び出し = 課金 API)。
+   refine=True (修正ボタン経由) のときは、既に清書済みのセルでも、現在の表示内容
+   (清書図+手書きの追記) をそのまま入力として再清書する。追記分を取り込んで整える用途。 *)
+iDocCleanFigure[nb_NotebookObject, cellIdx_Integer, refine_:False] :=
+  Module[{cellExpr, cell, img, prompt, response, code, gfx, boxes,
+          origContent, cleanContent, mode, busyMsg, doneMsg},
+    NBAccess`NBInvalidateCellsCache[nb];
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
+    busyMsg = If[TrueQ[refine],
+      iL["修正(再清書)中... (課金API)", "Refining figure... (Paid API)"],
+      iL["清書中... (課金API)", "Cleaning up... (Paid API)"]];
+    doneMsg = If[TrueQ[refine],
+      iL["修正完了", "Refine complete"], iL["清書完了", "Clean-up complete"]];
+
+    (* 課金 API ゲート: 画像のマルチモーダル送信に必須 *)
+    If[! TrueQ[ClaudeCode`GetPaletteFallback[]],
+      iDocFigStatus[nb, iL[
+        "清書には「課金API: 許可」が必要です (画像送信のため)。",
+        "Clean-up needs 'Paid API: On' (to send the image)."]];
+      Return[$Failed]];
+
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[! MatchQ[cellExpr, _Cell], Return[$Failed]];
+
+    mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
+    (* 清書表示中の再清書は通常ブロック。ただし refine(修正) のときは現在内容で再清書する。 *)
+    If[mode === "figClean" && ! TrueQ[refine],
+      iDocFigStatus[nb, iL[
+        "再清書は「修正」ボタンで。手書き図の清書は切替で手書きに戻してから。",
+        "Use 'Refine' to re-clean; or toggle back to the sketch first."], 4];
+      Return[$Failed]];
+
+    If[! NBAccess`NBCellHasImage[cellExpr],
+      iDocFigStatus[nb, iL["選択セルに手書きの図が見つかりません。",
+        "No drawing/figure found in the selected cell."]];
+      Return[$Failed]];
+
+    cell = NBAccess`NBResolveCell[nb, cellIdx];
+    If[cell === $Failed, Return[$Failed]];
+    img = Quiet @ Check[Rasterize[cell, ImageResolution -> 144], $Failed];
+    If[! ImageQ[img],
+      iDocFigStatus[nb, iL["図のラスタライズに失敗しました。",
+        "Failed to rasterize the figure."]];
+      Return[$Failed]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] = busyMsg];
+    (* 画像に加えて、元のベクターデータから正確なテキスト/座標ヒントを抽出して併用する *)
+    prompt = iDocCleanFigurePromptFn[] <> iDocExtractFigureHints[First[cellExpr]];
+    response = iDocAnthropicLLM[prompt, img];
+
+    If[! StringQ[response] || StringTrim[response] === "" ||
+        StringStartsQ[response, "Error"] || StringStartsQ[response, "[ERROR]"],
+      $iDocLastFigError = If[StringQ[response], response, "(no response)"];
+      iDocFigStatus[nb,
+        If[StringQ[response] && StringContainsQ[response, "NOKEY"],
+          iL["清書失敗: Anthropic 課金APIキー未設定 (SystemCredential[\"ANTHROPIC_API_KEY\"])",
+             "Clean-up failed: no Anthropic key (SystemCredential[\"ANTHROPIC_API_KEY\"])"],
+          iL["清書失敗: " <> StringTake[$iDocLastFigError, UpTo[160]] <>
+               " … (全文: $iDocLastFigError)",
+             "Clean-up failed: " <> StringTake[$iDocLastFigError, UpTo[160]] <>
+               " … (full text in $iDocLastFigError)"]], 12];
+      Return[$Failed]];
+
+    code = iDocFixGraphicsCode[iDocCleanComputeResponse[response]];
+    gfx = Quiet @ TimeConstrained[Check[ToExpression[code], $Failed], 30, $Failed];
+    (* 既定フォント ($ClaudeStandardFont) を適用: 日本語が豆腐/文字化けしないように *)
+    If[gfx =!= $Failed,
+      gfx = Quiet @ Check[iDocApplyFont[gfx, iDocStandardFont[]], gfx]];
+    boxes = If[gfx === $Failed, $Failed, Quiet @ Check[ToBoxes[gfx], $Failed]];
+    If[! iDocFigureBoxesQ[boxes],
+      (* デバッグ用に生成コードをタグと大域変数へ残す *)
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigCleanCode, code];
+      $iDocLastFigError = code;
+      iDocFigStatus[nb, iL[
+        "清書: 生成コードが図になりませんでした (コードは figCleanCode タグ/$iDocLastFigError)",
+        "Clean-up: generated code is not a figure (see figCleanCode tag / $iDocLastFigError)"], 10];
+      Return[$Failed]];
+
+    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避) *)
+    iDocCommitFigure[nb, cellIdx, First[cellExpr], BoxData[boxes], code, doneMsg];
+    cellIdx
+  ];
+
+(* テキスト(アイデア/説明)から概念図を生成するプロンプト *)
+iDocDiagramFromTextPromptFn[text_String] :=
+  iL[
+    "次の説明・アイデアを、分かりやすい概念図(ダイアグラム)として Wolfram Language の Graphics 式で描いてください。\n" <>
+    "ルール:\n" <>
+    "- 主要な要素を箱(Rectangle)やノード(Disk/Circle)で表し、関係を Arrow/Line でつなぐ\n" <>
+    "- ラベルは Text[\"...\"] で配置 (日本語可)。要素名は説明文の語をそのまま使う\n" <>
+    "- レイアウトは見やすく、重なりを避け、左→右 または 上→下 の自然な流れにする\n" <>
+    "- ベクタープリミティブ (Rectangle, Arrow, Line, Text, Disk, Circle, Polygon 等) のみ使用\n" <>
+    "- 配色は控えめ。EdgeForm/FaceForm/Style は可\n" <>
+    "- テキストに FontFamily は指定しない (既定の日本語対応フォントが自動適用される)\n" <>
+    "- 出力は単一の Graphics[...] 式のみ、そのまま評価可能であること\n" <>
+    "- 外部ファイル・未定義シンボル・Import は使わない (自己完結)\n" <>
+    "- マークダウン・コードフェンス(```)・説明文は一切含めない\n" <>
+    "- 最初の文字から最後の文字まで、すべて Graphics 式でなければならない\n\n" <>
+    "説明・アイデア:\n" <> text,
+    "Draw a clear conceptual diagram for the following description/idea, as a Wolfram Language Graphics expression.\n" <>
+    "Rules:\n" <>
+    "- Represent key elements as boxes (Rectangle) or nodes (Disk/Circle); connect relations with Arrow/Line\n" <>
+    "- Place labels with Text[\"...\"]; reuse the wording from the description\n" <>
+    "- Keep the layout clear, avoid overlaps, use a natural left-to-right or top-to-bottom flow\n" <>
+    "- Use only vector primitives (Rectangle, Arrow, Line, Text, Disk, Circle, Polygon, etc.)\n" <>
+    "- Keep colors subtle; EdgeForm/FaceForm/Style allowed\n" <>
+    "- Do NOT set FontFamily on any text (a default CJK-capable font is applied automatically)\n" <>
+    "- Output a SINGLE Graphics[...] expression, directly evaluable\n" <>
+    "- No external files, undefined symbols, or Import (self-contained)\n" <>
+    "- No markdown, code fences (```), or explanation\n" <>
+    "- From the first to the last character, everything must be a Graphics expression\n\n" <>
+    "Description / idea:\n" <> text
+  ];
+
+(* テキストセル(アイデアプロンプト等)を、その内容を表す概念図に清書する。
+   元テキストを figOutline、生成図を figCleanBoxes として figClean トグルに載せるので、
+   切替でテキスト⇔図、×清書でテキストに復元できる。 *)
+iDocDiagramFromText[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{cellExpr, text, prompt, response, code, gfx, boxes, origContent},
+    NBAccess`NBInvalidateCellsCache[nb];
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
+    If[! TrueQ[ClaudeCode`GetPaletteFallback[]],
+      iDocFigStatus[nb, iL[
+        "図生成には「課金API: 許可」が必要です。",
+        "Diagram generation needs 'Paid API: On'."]];
+      Return[$Failed]];
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[! MatchQ[cellExpr, _Cell], Return[$Failed]];
+    text = NBAccess`NBCellGetText[nb, cellIdx];
+    If[! StringQ[text] || StringTrim[text] === "",
+      iDocFigStatus[nb, iL["セルにテキストがありません。", "The cell has no text."]];
+      Return[$Failed]];
+
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["図を生成中... (課金API)", "Generating diagram... (Paid API)"]];
+    prompt = iDocDiagramFromTextPromptFn[text];
+    response = iDocAnthropicLLM[prompt];   (* テキストのみ *)
+
+    If[! StringQ[response] || StringTrim[response] === "" ||
+        StringStartsQ[response, "Error"] || StringStartsQ[response, "[ERROR]"],
+      $iDocLastFigError = If[StringQ[response], response, "(no response)"];
+      iDocFigStatus[nb,
+        If[StringQ[response] && StringContainsQ[response, "NOKEY"],
+          iL["図生成失敗: Anthropic 課金APIキー未設定 (SystemCredential[\"ANTHROPIC_API_KEY\"])",
+             "Diagram failed: no Anthropic key (SystemCredential[\"ANTHROPIC_API_KEY\"])"],
+          iL["図生成失敗: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … (全文: $iDocLastFigError)",
+             "Diagram failed: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … ($iDocLastFigError)"]], 12];
+      Return[$Failed]];
+
+    code = iDocFixGraphicsCode[iDocCleanComputeResponse[response]];
+    gfx = Quiet @ TimeConstrained[Check[ToExpression[code], $Failed], 30, $Failed];
+    (* 既定フォント ($ClaudeStandardFont) を適用: 日本語が豆腐/文字化けしないように *)
+    If[gfx =!= $Failed,
+      gfx = Quiet @ Check[iDocApplyFont[gfx, iDocStandardFont[]], gfx]];
+    boxes = If[gfx === $Failed, $Failed, Quiet @ Check[ToBoxes[gfx], $Failed]];
+    If[! iDocFigureBoxesQ[boxes],
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigCleanCode, code];
+      $iDocLastFigError = code;
+      iDocFigStatus[nb, iL[
+        "図生成: 生成コードが図になりませんでした ($iDocLastFigError)",
+        "Diagram: generated code is not a figure ($iDocLastFigError)"], 10];
+      Return[$Failed]];
+
+    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避) *)
+    iDocCommitFigure[nb, cellIdx, First[cellExpr], BoxData[boxes], code,
+      iL["図を生成しました", "Diagram generated"]];
+    cellIdx
+  ];
+
+(* ============================================================
+   更新(高品質化): 画像生成AI / ベクター強化
+   ============================================================ *)
+
+iDocOpenAIKey[] :=
+  Quiet @ Check[NBAccess`NBGetAPIKey["openai", PrivacySpec -> <|"AccessLevel" -> 1.0|>], $Failed];
+
+(* OpenAI 応答(ByteArray/String)から b64 画像を取り出して Image を返す。失敗時 "Error: ..." *)
+iDocOpenAIDecodeImage[resp_] :=
+  Module[{status, bodyText, parsed, b64, out},
+    If[resp === $Failed, Return["Error: HTTP request failed"]];
+    status = resp[[1]];
+    bodyText = If[ByteArrayQ[resp[[2]]],
+      Quiet @ Check[ByteArrayToString[resp[[2]], "UTF-8"], ToString[resp[[2]]]],
+      ToString[resp[[2]]]];
+    If[status =!= 200,
+      Return["Error: HTTP " <> ToString[status] <> " " <> StringTake[bodyText, UpTo[500]]]];
+    parsed = Quiet @ Check[Developer`ReadRawJSONString[bodyText], $Failed];
+    If[! AssociationQ[parsed],
+      Return["Error: parse failed; body: " <> StringTake[bodyText, UpTo[400]]]];
+    b64 = Quiet @ Check[
+      Lookup[First[Lookup[parsed, "data", {<||>}], <||>], "b64_json", $Failed], $Failed];
+    If[! StringQ[b64],
+      Return["Error: no image data; body: " <> StringTake[bodyText, UpTo[400]]]];
+    out = Quiet @ Check[ImportByteArray[BaseDecode[b64], "PNG"], $Failed];
+    If[! ImageQ[out], Return["Error: image decode failed"]];
+    out
+  ];
+
+(* img2img: 入力画像+プロンプト → 強化ラスター画像 (gpt-image-1 /images/edits, multipart)。
+   画像は一時 PNG ファイルにして File[] で multipart アップロードする (最も確実な形式)。 *)
+iDocOpenAIImageEdit[img_Image, promptText_String] :=
+  Module[{key, tmpPng, resp, out},
+    key = iDocOpenAIKey[];
+    If[! StringQ[key] || StringTrim[key] === "", Return["Error: NOKEY-OPENAI"]];
+    tmpPng = FileNameJoin[{$TemporaryDirectory,
+      "docfig_" <> ToString[$ProcessID] <> "_" <> ToString[Hash[promptText]] <> ".png"}];
+    If[! StringQ[Quiet @ Check[Export[tmpPng, img, "PNG"], $Failed]],
+      Return["Error: ENCODE"]];
+    resp = Quiet @ Check[
+      URLRead[HTTPRequest["https://api.openai.com/v1/images/edits",
+        <|"Method" -> "POST",
+          "Headers" -> {"Authorization" -> "Bearer " <> key},
+          "Body" -> {
+            "model" -> "gpt-image-1",
+            "prompt" -> promptText,
+            "image" -> File[tmpPng]}|>],
+        {"StatusCode", "BodyByteArray"}, TimeConstraint -> 300], $Failed];
+    Quiet[DeleteFile[tmpPng]];
+    out = iDocOpenAIDecodeImage[resp];
+    out
+  ];
+
+(* text2img: プロンプト → 新規ラスター画像 (dall-e-3 /images/generations, JSON) *)
+iDocOpenAIImageGen[promptText_String] :=
+  Module[{key, body, json, resp},
+    key = iDocOpenAIKey[];
+    If[! StringQ[key] || StringTrim[key] === "", Return["Error: NOKEY-OPENAI"]];
+    body = <|"model" -> "dall-e-3", "prompt" -> promptText, "n" -> 1,
+      "size" -> "1024x1024", "response_format" -> "b64_json"|>;
+    json = Quiet @ Check[Developer`WriteRawJSONString[body], $Failed];
+    If[! StringQ[json], Return["Error: JSON"]];
+    resp = Quiet @ Check[
+      URLRead[HTTPRequest["https://api.openai.com/v1/images/generations",
+        <|"Method" -> "POST",
+          "Headers" -> {"Authorization" -> "Bearer " <> key},
+          "ContentType" -> "application/json",
+          "Body" -> StringToByteArray[json, "UTF8"]|>],
+        {"StatusCode", "BodyByteArray"}, TimeConstraint -> 300], $Failed];
+    iDocOpenAIDecodeImage[resp]
+  ];
+
+(* vector 更新のスタイル設定を文章化する (配色テーマ/影/角丸) *)
+iDocPolishStyleInstr[] :=
+  Module[{theme, shadow, rounding, colorJa, colorEn, shJa, shEn, rdJa, rdEn},
+    theme = ToLowerCase @ If[StringQ[$iDocPolishColorTheme], $iDocPolishColorTheme, "auto"];
+    shadow = ToLowerCase @ If[StringQ[$iDocPolishShadow], $iDocPolishShadow, "subtle"];
+    rounding = ToLowerCase @ If[StringQ[$iDocPolishRounding], $iDocPolishRounding, "medium"];
+    {colorJa, colorEn} = Switch[theme,
+      "pastel", {"淡いパステルカラーで統一", "a unified soft pastel palette"},
+      "monotone", {"グレースケール(モノトーン)で統一", "grayscale / monotone"},
+      "vivid", {"鮮やかでコントラストの高い配色", "vivid, high-contrast colors"},
+      "blueprint", {"ブループリント風(紺地に白の線と文字)", "blueprint style (navy background, white lines/text)"},
+      "warm", {"暖色系で調和", "harmonized warm colors"},
+      "cool", {"寒色系で調和", "harmonized cool colors"},
+      _, {"元の配色を尊重しつつ調和させる", "respect the original colors while harmonizing"}];
+    {shJa, shEn} = Switch[shadow,
+      "none", {"影は付けない", "no drop shadows"},
+      "medium", {"中程度のドロップシャドウ", "medium drop shadows"},
+      "strong", {"はっきりしたドロップシャドウ", "strong drop shadows"},
+      _, {"ごく控えめなドロップシャドウ", "very subtle drop shadows"}];
+    {rdJa, rdEn} = Switch[rounding,
+      "none", {"角は丸めず直角 (RoundingRadius を使わない)", "square corners (no RoundingRadius)"},
+      "small", {"わずかに角丸 (RoundingRadius -> 0.06 程度)", "slightly rounded (RoundingRadius ~ 0.06)"},
+      "large", {"大きめに角丸 (RoundingRadius -> 0.2 程度)", "largely rounded (RoundingRadius ~ 0.2)"},
+      _, {"適度に角丸 (RoundingRadius -> 0.12 程度)", "moderately rounded (RoundingRadius ~ 0.12)"}];
+    iL[
+      "\n\nスタイル設定 (厳守):\n- 配色: " <> colorJa <> "\n- 影: " <> shJa <> "\n- 角丸: " <> rdJa,
+      "\n\nStyle settings (strict):\n- Colors: " <> colorEn <> "\n- Shadows: " <> shEn <> "\n- Corners: " <> rdEn]
+  ];
+
+(* 更新プロンプト(ベクター強化用: 画像を見て影/装飾を加えた Graphics を出させる) *)
+iDocPolishVectorPromptFn[variantNote_String:""] :=
+  iL[
+    "添付画像は Wolfram の Graphics ダイアグラムです。これを見栄え良く仕上げ直した Graphics 式を出力してください。\n" <>
+    "- 配置・テキスト・接続関係・図の構造は厳密に保つ (位置や文言を変えない)\n" <>
+    "- 箱やノードに控えめなドロップシャドウと角丸を付け、上品に整える\n" <>
+    "- 線の太さ・矢印・余白を整え、配色は調和させる (派手にしない)\n" <>
+    "- テキストに FontFamily は指定しない\n\n" <>
+    "影付き角丸ボックスは必ず次の正しい記法に従うこと:\n" <>
+    "  Graphics[{\n" <>
+    "    DropShadowing[], EdgeForm[GrayLevel[0.4]], FaceForm[RGBColor[0.87,0.94,1]],\n" <>
+    "    Rectangle[{0,0}, {2,1}, RoundingRadius -> 0.12],\n" <>
+    "    Text[\"\:30e9\:30d9\:30eb\", {1,0.5}]}]\n" <>
+    "厳守事項:\n" <>
+    "- 影は必ずディレクティブ DropShadowing[] を対象プリミティブの直前にリストへ置く。" <>
+    "関数 DropShadow は存在しない。図形を DropShadowing[図形] のように包む書き方も禁止。\n" <>
+    "- 角丸は Rectangle の RoundingRadius オプションのみ。FilledCurve / JoinedCurve で囲まない。\n" <>
+    "- 出力は単一の Graphics[...] 式のみ。マークダウン・コードフェンス・説明は含めない。\n" <>
+    "- 自己完結 (外部ファイル・未定義シンボル・Import 不可)。そのまま評価でき、メッセージが出ないこと。",
+    "The attached image is a Wolfram Graphics diagram. Output a refined, better-looking Graphics expression.\n" <>
+    "- Strictly preserve placement, text, connections, and structure (do not change positions or wording)\n" <>
+    "- Add subtle drop shadows and rounded corners to boxes/nodes; keep it elegant\n" <>
+    "- Tidy stroke widths, arrows, spacing; harmonize colors (not flashy)\n" <>
+    "- Do NOT set FontFamily on text\n\n" <>
+    "Shadowed rounded boxes MUST follow this exact, valid syntax:\n" <>
+    "  Graphics[{\n" <>
+    "    DropShadowing[], EdgeForm[GrayLevel[0.4]], FaceForm[RGBColor[0.87,0.94,1]],\n" <>
+    "    Rectangle[{0,0}, {2,1}, RoundingRadius -> 0.12],\n" <>
+    "    Text[\"Label\", {1,0.5}]}]\n" <>
+    "Strict rules:\n" <>
+    "- Shadows: use the DIRECTIVE DropShadowing[] placed in the list BEFORE the primitives. " <>
+    "There is NO function called DropShadow, and do NOT wrap shapes like DropShadowing[shape].\n" <>
+    "- Rounded corners: ONLY via Rectangle's RoundingRadius option. Do not wrap in FilledCurve/JoinedCurve.\n" <>
+    "- Output a SINGLE Graphics[...] expression only; no markdown, code fences, or explanation.\n" <>
+    "- Self-contained; must evaluate cleanly with no messages."
+  ] <> iDocPolishStyleInstr[] <> variantNote;
+
+(* 更新プロンプト(画像生成AI用: 現在の図を高品質ラスターに) *)
+iDocPolishImagePromptFn[] :=
+  iL[
+    "このダイアグラム画像を高品質に仕上げてください。各ボックスに柔らかいドロップシャドウを付け、" <>
+    "配色とコントラストを整え、線や矢印を滑らかにし、プロフェッショナルな図にする。" <>
+    "ただしテキスト・ラベル・要素の配置・矢印の向き・全体構造は元のまま厳密に保つこと。背景は白。",
+    "Polish this diagram image to a clean, professional look: add soft drop shadows to the boxes, " <>
+    "refine colors and contrast, and smooth the lines and arrows. " <>
+    "Keep ALL text, labels, element positions, arrow directions, and overall structure EXACTLY as in the original. White background."
+  ];
+
+(* エラー時の共通処理: 全文を $iDocLastFigError に残し、ステータスバーに要点を出す *)
+iDocFigFail[nb_, result_, label_String] := (
+  $iDocLastFigError = If[StringQ[result], result, ToString[result]];
+  iDocFigStatus[nb,
+    Which[
+      StringContainsQ[$iDocLastFigError, "NOKEY-OPENAI"],
+        iL["更新失敗: OpenAI APIキー未設定 (SystemCredential[\"OPENAI_API_KEY\"])",
+           "Polish failed: no OpenAI key (SystemCredential[\"OPENAI_API_KEY\"])"],
+      StringContainsQ[$iDocLastFigError, "NOKEY"],
+        iL["失敗: Anthropic APIキー未設定 (SystemCredential[\"ANTHROPIC_API_KEY\"])",
+           "Failed: no Anthropic key (SystemCredential[\"ANTHROPIC_API_KEY\"])"],
+      True,
+        iL[label <> "失敗: " <> StringTake[$iDocLastFigError, UpTo[140]] <> " … ($iDocLastFigError)",
+           label <> " failed: " <> StringTake[$iDocLastFigError, UpTo[140]] <> " … ($iDocLastFigError)"]],
+    12];
+  $Failed);
+
+(* vector 更新を1回実行し、レンダリング済み Graphics を返す。失敗時 "Error: ..."。
+   img: 元図のラスタ, hints: 抽出ヒント, variantNote: 案ごとの差別化指示。 *)
+iDocPolishVectorOne[img_Image, hints_String, variantNote_String] :=
+  Module[{result, code, gfx, boxes},
+    result = iDocAnthropicLLM[iDocPolishVectorPromptFn[variantNote] <> hints, img];
+    If[! StringQ[result] || StringTrim[result] === "" ||
+        StringStartsQ[result, "Error"] || StringStartsQ[result, "[ERROR]"],
+      Return[If[StringQ[result], result, "Error: no response"]]];
+    code = iDocFixGraphicsCode[iDocCleanComputeResponse[result]];
+    gfx = Quiet @ TimeConstrained[Check[ToExpression[code], $Failed], 30, $Failed];
+    If[gfx =!= $Failed, gfx = Quiet @ Check[iDocApplyFont[gfx, iDocStandardFont[]], gfx]];
+    boxes = If[gfx === $Failed, $Failed, Quiet @ Check[ToBoxes[gfx], $Failed]];
+    If[! iDocFigureBoxesQ[boxes], Return["Error: 生成コードが図になりませんでした"]];
+    gfx
+  ];
+
+(* 複数案から1つをダイアログで選ばせ、選択した Graphics を返す。キャンセル時は $Canceled。 *)
+iDocChooseVariant[variants_List] :=
+  If[Length[variants] === 1, First[variants],
+    DialogInput[
+      Column[{
+        Style[iL["案を選んでください", "Choose a variant"], Bold, 12],
+        Grid[
+          Partition[
+            Table[
+              Button[
+                Framed[Pane[variants[[i]], ImageSize -> 240],
+                  FrameMargins -> 6, Background -> White],
+                DialogReturn[variants[[i]]], Appearance -> "Palette"],
+              {i, Length[variants]}],
+            2, 2, {1, 1}, {}],
+          Spacings -> {1, 1}]
+      }, Alignment -> Center, Spacings -> 1],
+      WindowTitle -> iL["更新: 案の選択", "Polish: choose a variant"]]];
+
+(* 図セルを高品質化する。$iDocFigurePolishMethod で方法を切り替え。
+   結果は figClean トグルに載せる (切替で 元図 ⇄ 高品質版、×清書 で元図に復元)。 *)
+iDocPolishFigure[nb_NotebookObject, cellIdx_Integer] :=
+  Module[{cellExpr, cell, img, method, result, gfx, boxes, desc, cleanContent, origContent,
+          hints, nVar, variants, chosen},
+    NBAccess`NBInvalidateCellsCache[nb];
+    If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
+    If[! TrueQ[ClaudeCode`GetPaletteFallback[]],
+      iDocFigStatus[nb, iL[
+        "更新(高品質化)には「課金API: 許可」が必要です。",
+        "Polish needs 'Paid API: On'."]];
+      Return[$Failed]];
+    cellExpr = NBAccess`NBCellRead[nb, cellIdx];
+    If[! MatchQ[cellExpr, _Cell] || ! TrueQ[NBAccess`NBCellHasImage[cellExpr]],
+      iDocFigStatus[nb, iL["更新の対象となる図がありません。", "No figure to polish."]];
+      Return[$Failed]];
+    cell = NBAccess`NBResolveCell[nb, cellIdx];
+    If[cell === $Failed, Return[$Failed]];
+    img = Quiet @ Check[Rasterize[cell, ImageResolution -> 144], $Failed];
+    If[! ImageQ[img],
+      iDocFigStatus[nb, iL["図のラスタライズに失敗しました。", "Failed to rasterize the figure."]];
+      Return[$Failed]];
+
+    method = If[StringQ[$iDocFigurePolishMethod],
+      ToLowerCase[StringTrim[$iDocFigurePolishMethod]], "gptimage"];
+    Quiet[CurrentValue[nb, WindowStatusArea] =
+      iL["更新中(高品質化:" <> method <> ")... (課金API)",
+         "Polishing (" <> method <> ")... (Paid API)"]];
+
+    cleanContent = Switch[method,
+      (* --- ベクター強化 (Anthropic → Graphics)。スタイル設定 + 複数案対応 --- *)
+      "vector",
+        hints = iDocExtractFigureHints[First[cellExpr]];
+        nVar = If[IntegerQ[$iDocPolishVariants] && $iDocPolishVariants >= 1,
+          Min[$iDocPolishVariants, 4], 1];
+        If[nVar === 1,
+          (* 単一案 *)
+          gfx = iDocPolishVectorOne[img, hints, ""];
+          If[! MatchQ[Head[gfx], Graphics | Graphics3D],
+            Return[iDocFigFail[nb, gfx, "更新"]]];
+          BoxData[ToBoxes[gfx]],
+          (* 複数案 → ダイアログで選択 *)
+          variants = Table[
+            (Quiet[CurrentValue[nb, WindowStatusArea] =
+               iL["更新中(案 " <> ToString[k] <> "/" <> ToString[nVar] <> ")... (課金API)",
+                  "Polishing (variant " <> ToString[k] <> "/" <> ToString[nVar] <> ")... (Paid API)"]];
+             iDocPolishVectorOne[img, hints,
+               iL["\n案" <> ToString[k] <> ": 他案と少し異なる装飾/レイアウトのバリエーションにする。",
+                  "\nVariant " <> ToString[k] <> ": make a slightly different decoration/layout from the others."]]),
+            {k, nVar}];
+          variants = Select[variants, MatchQ[Head[#], Graphics | Graphics3D] &];
+          If[Length[variants] === 0,
+            Return[iDocFigFail[nb, "全案の生成に失敗しました", "更新"]]];
+          chosen = iDocChooseVariant[variants];
+          If[! MatchQ[Head[chosen], Graphics | Graphics3D],
+            iDocFigStatus[nb, iL["更新をキャンセルしました", "Polish cancelled"], 3];
+            Return[$Failed]];
+          BoxData[ToBoxes[chosen]]],
+      (* --- dall-e-3 (説明 → 新規生成) --- *)
+      "dalle",
+        desc = iDocAnthropicLLM[iL[
+          "この図を画像生成AI用に英語で詳しく描写してください。要素・配置・ラベル(原語のまま)・矢印の向き・配色を含め、説明文のみ出力。",
+          "Describe this diagram in detail in English for an image generator: elements, layout, labels (verbatim), arrow directions, colors. Output only the description."], img];
+        If[! StringQ[desc] || StringStartsQ[desc, "Error"], Return[iDocFigFail[nb, desc, "更新"]]];
+        result = iDocOpenAIImageGen[
+          "Clean, professional vector-style diagram with soft drop shadows, white background. " <> desc];
+        If[! ImageQ[result], Return[iDocFigFail[nb, result, "更新"]]];
+        BoxData[ToBoxes[result]],
+      (* --- 既定: gpt-image-1 img2img --- *)
+      _,
+        result = iDocOpenAIImageEdit[img, iDocPolishImagePromptFn[]];
+        If[! ImageQ[result], Return[iDocFigFail[nb, result, "更新"]]];
+        BoxData[ToBoxes[result]]];
+
+    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避)。polish は figCleanCode 無し *)
+    iDocCommitFigure[nb, cellIdx, First[cellExpr], cleanContent, Null,
+      iL["更新完了", "Polish complete"]];
+    cellIdx
+  ];
+
+(* セルが「今この瞬間、図を表示しているか」を現在の内容で判定する。
+   モードではなく内容で見るので、テキスト⇔図トグルの状態に正しく追従する:
+   - 図を表示中 → 清書/修正(再清書) の対象
+   - テキストを表示中 → 概念図生成 / テキスト校正 の対象 *)
+iDocIsFigureCell[nb_NotebookObject, cellIdx_Integer] :=
+  TrueQ[NBAccess`NBCellHasImage[NBAccess`NBCellRead[nb, cellIdx]]];
+
+iDocCleanFigureSelected[] :=
+  iDocEntryDeferred[iDocCleanFigureSelectedImpl[]];
+
+(* 清書ボタン: セルが図なら清書、テキスト(アイデア)なら概念図を生成する。 *)
+iDocCleanFigureSelectedImpl[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    Do[
+      NBAccess`NBInvalidateCellsCache[nb];
+      If[iDocIsFigureCell[nb, idx],
+        iDocCleanFigure[nb, idx],          (* 図 → 清書 *)
+        iDocDiagramFromText[nb, idx]],     (* テキスト → 概念図を生成 *)
+      {idx, cellIdxs}];
+    NBAccess`NBSelectCell[nb, First[cellIdxs]]
+  ];
+
+(* figClean ↔ figOutline のトグル。現在表示中の (編集済みの可能性がある)
+   内容を保存してから反対側に切り替えるため、双方の手編集が保持される。 *)
+iDocToggleFigureClean[nb_NotebookObject, cellIdx_Integer, mode_] :=
+  Module[{current, outline, clean},
+    current = iDocReadCellContent[nb, cellIdx];
+    If[mode === "figClean",
+      (* 清書表示中 → 手書きへ。現在の清書内容を保存 *)
+      If[current =!= $Failed,
+        NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigCleanBoxes,
+          Compress[current]]];
+      outline = iDocGetCompressedTag[nb, cellIdx, $iDocTagFigOutline];
+      If[outline === $Failed,
+        MessageDialog[iL["元の手書き図が見つかりません。",
+          "Original sketch not found."]];
+        Return[$Failed]];
+      iDocWriteCellContent[nb, cellIdx, outline];
+      NBAccess`NBCellSetOptions[nb, cellIdx, Sequence @@ $iDocOutlineFigCellOpts];
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagMode, "figOutline"],
+      (* 手書き表示中 → 清書へ。現在の手書き内容を保存 *)
+      If[current =!= $Failed,
+        NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigOutline,
+          Compress[current]]];
+      clean = iDocGetCompressedTag[nb, cellIdx, $iDocTagFigCleanBoxes];
+      If[clean === $Failed,
+        MessageDialog[iL["清書図が見つかりません。",
+          "Clean figure not found."]];
+        Return[$Failed]];
+      iDocWriteCellContent[nb, cellIdx, clean];
+      NBAccess`NBCellSetOptions[nb, cellIdx, Sequence @@ $iDocCleanFigCellOpts];
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagMode, "figClean"]];
+    NBAccess`NBSelectCell[nb, cellIdx];
+    cellIdx
+  ];
+
+(* 選択セルの清書を破棄し、元の手書き図に戻す。 *)
+iDocDeleteCleanFigureSelected[] :=
+  iDocEntryDeferred[iDocDeleteCleanFigureSelectedImpl[]];
+
+iDocDeleteCleanFigureSelectedImpl[] :=
+  Module[{nb, cellIdxs},
+    {nb, cellIdxs} = iDocResolveTargetCells[];
+    If[Length[cellIdxs] === 0,
+      MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
+      Return[$Failed]];
+    If[ChoiceDialog[
+        iL["選択セルの清書を破棄して手書きに戻しますか？",
+           "Discard the clean-up and revert to the sketch?"],
+        {iL["戻す", "Revert"] -> True, iL["キャンセル", "Cancel"] -> False},
+        WindowTitle -> iL["確認", "Confirm"]],
+      Do[
+        Module[{mode, outline},
+          NBAccess`NBInvalidateCellsCache[nb];
+          mode = NBAccess`NBCellGetTaggingRule[nb, idx, $iDocTagMode];
+          If[mode === "figClean" || mode === "figOutline",
+            outline = iDocGetCompressedTag[nb, idx, $iDocTagFigOutline];
+            (* 手書きを復元 (清書表示中の場合のみ書き換えが必要だが、
+               figOutline でも同一内容なので安全に再書き込みする) *)
+            If[outline =!= $Failed, iDocWriteCellContent[nb, idx, outline]];
+            NBAccess`NBInvalidateCellsCache[nb];
+            (* フレーム/タグをクリア *)
+            NBAccess`NBCellSetOptions[nb, idx,
+              CellFrame -> Inherited, CellFrameColor -> Inherited];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagMode, Inherited];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigOutline, Inherited];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigCleanBoxes, Inherited];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigCleanCode, Inherited]]],
+        {idx, Reverse[cellIdxs]}]]
+  ];
+
 
 
 
@@ -6257,8 +7142,13 @@ iDocRefineSelectedImpl[] :=
       MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     If[Length[cellIdxs] === 1,
-      DocRefine[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]];
-      NBAccess`NBSelectCell[nb, First[cellIdxs]],
+      Module[{idx = First[cellIdxs]},
+        NBAccess`NBInvalidateCellsCache[nb];
+        (* 図セルの「修正」= 現在の表示(清書図+手書きの追記)を再清書する *)
+        If[iDocIsFigureCell[nb, idx],
+          iDocCleanFigure[nb, idx, True],
+          DocRefine[nb, idx, Fallback -> ClaudeCode`GetPaletteFallback[]]];
+        NBAccess`NBSelectCell[nb, idx]],
       iDocRefineSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
   ];
 
@@ -6273,13 +7163,22 @@ iDocRefineSelectedChain[nb_, idxs_, pos_, fb_] :=
       iL["修正中: ", "Refining: "] <>
         ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
+      NBAccess`NBInvalidateCellsCache[nb];
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
-        iDocRefineSelectedChain[nb, idxs, pos + 1, fb],
-        DocRefine[nb, cellIdx, Fallback -> fb];
-        iDocOneShotAfter[
-          With[{pNb = nb, is = idxs, p = pos, f = fb},
-            iDocRefineSelectedChain[pNb, is, p + 1, f]], {2}]]]
+      Which[
+        (* 図セル: 同期で再清書してから次へ *)
+        iDocIsFigureCell[nb, cellIdx],
+          iDocCleanFigure[nb, cellIdx, True];
+          iDocOneShotAfter[
+            With[{pNb = nb, is = idxs, p = pos, f = fb},
+              iDocRefineSelectedChain[pNb, is, p + 1, f]], {2}],
+        iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
+          iDocRefineSelectedChain[nb, idxs, pos + 1, fb],
+        True,
+          DocRefine[nb, cellIdx, Fallback -> fb];
+          iDocOneShotAfter[
+            With[{pNb = nb, is = idxs, p = pos, f = fb},
+              iDocRefineSelectedChain[pNb, is, p + 1, f]], {2}]]]
   ];
 
 iDocPolishSelected[] :=
@@ -6292,8 +7191,13 @@ iDocPolishSelectedImpl[] :=
       MessageDialog[iL["セルを選択してください。", "Please select a cell."]];
       Return[$Failed]];
     If[Length[cellIdxs] === 1,
-      DocPolish[nb, First[cellIdxs], Fallback -> ClaudeCode`GetPaletteFallback[]];
-      NBAccess`NBSelectCell[nb, First[cellIdxs]],
+      Module[{idx = First[cellIdxs]},
+        NBAccess`NBInvalidateCellsCache[nb];
+        (* 図セルの「更新」= 画像生成AI/ベクター強化で高品質化 *)
+        If[iDocIsFigureCell[nb, idx],
+          iDocPolishFigure[nb, idx],
+          DocPolish[nb, idx, Fallback -> ClaudeCode`GetPaletteFallback[]]];
+        NBAccess`NBSelectCell[nb, idx]],
       iDocPolishSelectedChain[nb, cellIdxs, 1, ClaudeCode`GetPaletteFallback[]]]
   ];
 
@@ -6308,13 +7212,22 @@ iDocPolishSelectedChain[nb_, idxs_, pos_, fb_] :=
       iL["更新中: ", "Polishing: "] <>
         ToString[pos] <> "/" <> ToString[Length[idxs]]];
     Module[{cellIdx = idxs[[pos]], mode},
+      NBAccess`NBInvalidateCellsCache[nb];
       mode = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagMode];
-      If[iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
-        iDocPolishSelectedChain[nb, idxs, pos + 1, fb],
-        DocPolish[nb, cellIdx, Fallback -> fb];
-        iDocOneShotAfter[
-          With[{pNb = nb, is = idxs, p = pos, f = fb},
-            iDocPolishSelectedChain[pNb, is, p + 1, f]], {2}]]]
+      Which[
+        (* 図セル: 同期で高品質化してから次へ *)
+        iDocIsFigureCell[nb, cellIdx],
+          iDocPolishFigure[nb, cellIdx];
+          iDocOneShotAfter[
+            With[{pNb = nb, is = idxs, p = pos, f = fb},
+              iDocPolishSelectedChain[pNb, is, p + 1, f]], {2}],
+        iDocIsMetaCell[nb, cellIdx] || mode === "idea" || mode === "compute",
+          iDocPolishSelectedChain[nb, idxs, pos + 1, fb],
+        True,
+          DocPolish[nb, cellIdx, Fallback -> fb];
+          iDocOneShotAfter[
+            With[{pNb = nb, is = idxs, p = pos, f = fb},
+              iDocPolishSelectedChain[pNb, is, p + 1, f]], {2}]]]
   ];
 
 End[];
