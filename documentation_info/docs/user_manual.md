@@ -1529,6 +1529,7 @@ $ClaudeLMStudioIntegrations = {"mcp/exa"}
 |---|---|---|
 | `$iDocCleanFigureModel` | `""` | 清書／図生成で使う Anthropic モデル ID の手動上書き。`""` なら自動判定（`NBGetAvailableFallbackModels` から `claude-…` を選択、既定 `claude-opus-4-6`） |
 | `$iDocFigureMaxWidth` | `760` | 生成図の最大表示幅（px）。巨大な図でフロントエンドの整形が重くなるのを防ぐ上限 |
+| `$iDocFigureVectorDisplay` | `True` | 図セルの表示形式。`True`（既定）＝ベクター（`Graphics`）でそのまま表示（拡大しても綺麗）。`False`＝ラスター画像で表示（同期のままの画像経路でフリーズが出る場合の保険）。いずれも生成コードは `figCleanCode` タグに保存される |
 | `$iDocFigurePolishMethod` | `"vector"` | 更新（図の高品質化）の方式。`"vector"`（Anthropic でベクター強化）／`"gptimage"`（OpenAI gpt-image-1 img2img）／`"dalle"`（OpenAI dall-e-3 text2img） |
 | `$iDocPolishColorTheme` | `"auto"` | vector 更新の配色テーマ。`auto`/`pastel`/`monotone`/`vivid`/`blueprint`/`warm`/`cool` |
 | `$iDocPolishShadow` | `"subtle"` | vector 更新の影の強さ。`none`/`subtle`/`medium`/`strong` |

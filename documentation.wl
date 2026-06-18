@@ -6093,6 +6093,26 @@ iDocFixGraphicsCode[code_String] :=
   StringReplace[code, RegularExpression["\\bDropShadow\\b"] -> "DropShadowing"];
 iDocFixGraphicsCode[x_] := x;
 
+(* 図セルの表示形式。True(既定)=ベクター(Graphics)でそのまま表示。
+   以前フリーズの原因はベクターの整形ではなく、図経路だけが同期呼び出しでカーネルを
+   占有しパレットの Dynamic と衝突したことだった(text→diagram は非同期化で解消)。
+   そのため既定はベクター表示に戻している。
+   False にするとラスター画像で表示する(同期のままの画像経路でフリーズが出る場合の保険)。
+   いずれの場合も生成コードは figCleanCode タグに保存される。 *)
+$iDocFigureVectorDisplay = True;
+
+(* gfx (Graphics) をセル表示用の BoxData に変換する。
+   既定はラスター化(フリーズ回避)、$iDocFigureVectorDisplay=True ならベクター。 *)
+iDocFigureContent[gfx_] :=
+  If[TrueQ[$iDocFigureVectorDisplay],
+    BoxData[ToBoxes[gfx]],
+    Module[{img},
+      img = Quiet @ Check[
+        TimeConstrained[
+          Rasterize[gfx, ImageResolution -> 120, Background -> White], 60, $Failed],
+        $Failed];
+      If[ImageQ[img], BoxData[ToBoxes[img]], BoxData[ToBoxes[gfx]]]]];
+
 (* 既定フォント: ClaudeCode`$ClaudeStandardFont (未定義なら Yu Gothic UI)。
    日本語を含む図でも文字化け/豆腐にならないようにこのフォントを既定とする。 *)
 iDocStandardFont[] :=
@@ -6407,8 +6427,8 @@ iDocCleanFigure[nb_NotebookObject, cellIdx_Integer, refine_:False] :=
         "Clean-up: generated code is not a figure (see figCleanCode tag / $iDocLastFigError)"], 10];
       Return[$Failed]];
 
-    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避) *)
-    iDocCommitFigure[nb, cellIdx, First[cellExpr], BoxData[boxes], code, doneMsg];
+    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避)。表示はラスター(既定) *)
+    iDocCommitFigure[nb, cellIdx, First[cellExpr], iDocFigureContent[gfx], code, doneMsg];
     cellIdx
   ];
 
@@ -6446,8 +6466,11 @@ iDocDiagramFromTextPromptFn[text_String] :=
 (* テキストセル(アイデアプロンプト等)を、その内容を表す概念図に清書する。
    元テキストを figOutline、生成図を figCleanBoxes として figClean トグルに載せるので、
    切替でテキスト⇔図、×清書でテキストに復元できる。 *)
+(* テキスト → 概念図。計算(DocCompute)と同じ **非同期** $NBLLMQueryFunc 経路を使う。
+   同期 URLRead でカーネルを数十秒占有するとフローティングパレットの Dynamic
+   (UpdateInterval) と干渉してフロントエンドがデッドロックするため、必ず非同期にする。 *)
 iDocDiagramFromText[nb_NotebookObject, cellIdx_Integer] :=
-  Module[{cellExpr, text, prompt, response, code, gfx, boxes, origContent},
+  Module[{cellExpr, text, prompt, origContent, privLevel, syncTag},
     NBAccess`NBInvalidateCellsCache[nb];
     If[iDocIsMetaCell[nb, cellIdx], Return[$Failed]];
     If[! TrueQ[ClaudeCode`GetPaletteFallback[]],
@@ -6462,39 +6485,56 @@ iDocDiagramFromText[nb_NotebookObject, cellIdx_Integer] :=
       iDocFigStatus[nb, iL["セルにテキストがありません。", "The cell has no text."]];
       Return[$Failed]];
 
+    origContent = First[cellExpr];
+    (* 非同期で Job セルが挿入されインデックスがずれても再特定できるよう syncTag を付与 *)
+    syncTag = "doc-figsync-" <> ToString[UnixTime[]] <> "-" <> ToString[RandomInteger[99999]];
+    NBAccess`NBCellSetTaggingRule[nb, cellIdx, {$iDocTagRoot, "syncTag"}, syncTag];
+    privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
     Quiet[CurrentValue[nb, WindowStatusArea] =
       iL["図を生成中... (課金API)", "Generating diagram... (Paid API)"]];
+    iDocSetJobAnchorCell[nb, cellIdx];
     prompt = iDocDiagramFromTextPromptFn[text];
-    response = iDocAnthropicLLM[prompt];   (* テキストのみ *)
 
-    If[! StringQ[response] || StringTrim[response] === "" ||
-        StringStartsQ[response, "Error"] || StringStartsQ[response, "[ERROR]"],
-      $iDocLastFigError = If[StringQ[response], response, "(no response)"];
-      iDocFigStatus[nb,
-        If[StringQ[response] && StringContainsQ[response, "NOKEY"],
-          iL["図生成失敗: Anthropic 課金APIキー未設定 (SystemCredential[\"ANTHROPIC_API_KEY\"])",
-             "Diagram failed: no Anthropic key (SystemCredential[\"ANTHROPIC_API_KEY\"])"],
-          iL["図生成失敗: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … (全文: $iDocLastFigError)",
-             "Diagram failed: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … ($iDocLastFigError)"]], 12];
-      Return[$Failed]];
-
-    code = iDocFixGraphicsCode[iDocCleanComputeResponse[response]];
-    gfx = Quiet @ TimeConstrained[Check[ToExpression[code], $Failed], 30, $Failed];
-    (* 既定フォント ($ClaudeStandardFont) を適用: 日本語が豆腐/文字化けしないように *)
-    If[gfx =!= $Failed,
-      gfx = Quiet @ Check[iDocApplyFont[gfx, iDocStandardFont[]], gfx]];
-    boxes = If[gfx === $Failed, $Failed, Quiet @ Check[ToBoxes[gfx], $Failed]];
-    If[! iDocFigureBoxesQ[boxes],
-      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigCleanCode, code];
-      $iDocLastFigError = code;
-      iDocFigStatus[nb, iL[
-        "図生成: 生成コードが図になりませんでした ($iDocLastFigError)",
-        "Diagram: generated code is not a figure ($iDocLastFigError)"], 10];
-      Return[$Failed]];
-
-    (* 書き込みは別 tick へ逃がす (重い整形のデッドロック回避) *)
-    iDocCommitFigure[nb, cellIdx, First[cellExpr], BoxData[boxes], code,
-      iL["図を生成しました", "Diagram generated"]];
+    With[{nb2 = nb, ci = cellIdx, oc = origContent, stag = syncTag},
+      NBAccess`$NBLLMQueryFunc[prompt,
+        Function[response,
+          Module[{idx, code, gfx, boxes, content},
+            NBAccess`NBInvalidateCellsCache[nb2];
+            idx = iDocFindSyncTag[nb2, stag];
+            If[idx === 0, idx = ci];
+            NBAccess`NBCellSetTaggingRule[nb2, idx, {$iDocTagRoot, "syncTag"}, Inherited];
+            If[! StringQ[response] || StringTrim[response] === "" ||
+                StringStartsQ[response, "Error"] || StringStartsQ[response, "[ERROR]"],
+              $iDocLastFigError = If[StringQ[response], response, "(no response)"];
+              iDocFigStatus[nb2,
+                iL["図生成失敗: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … ($iDocLastFigError)",
+                   "Diagram failed: " <> StringTake[$iDocLastFigError, UpTo[160]] <> " … ($iDocLastFigError)"], 10],
+              (* 正常: コード → 図 *)
+              code = iDocFixGraphicsCode[iDocCleanComputeResponse[response]];
+              gfx = Quiet @ TimeConstrained[Check[ToExpression[code], $Failed], 30, $Failed];
+              If[gfx =!= $Failed, gfx = Quiet @ Check[iDocApplyFont[gfx, iDocStandardFont[]], gfx]];
+              boxes = If[gfx === $Failed, $Failed, Quiet @ Check[ToBoxes[gfx], $Failed]];
+              If[! iDocFigureBoxesQ[boxes],
+                NBAccess`NBCellSetTaggingRule[nb2, idx, $iDocTagFigCleanCode, code];
+                $iDocLastFigError = code;
+                iDocFigStatus[nb2, iL[
+                  "図生成: 生成コードが図になりませんでした ($iDocLastFigError)",
+                  "Diagram: generated code is not a figure ($iDocLastFigError)"], 10],
+                (* セルへ反映 (表示はラスター(既定)) *)
+                content = iDocFigureContent[gfx];
+                NBAccess`NBCellSetTaggingRule[nb2, idx, $iDocTagFigOutline, Compress[oc]];
+                NBAccess`NBCellSetTaggingRule[nb2, idx, $iDocTagFigCleanBoxes, Compress[content]];
+                NBAccess`NBCellSetTaggingRule[nb2, idx, $iDocTagFigCleanCode, code];
+                NBAccess`NBCellSetTaggingRule[nb2, idx, $iDocTagMode, "figClean"];
+                iDocWriteCellContent[nb2, idx, content];
+                NBAccess`NBCellSetOptions[nb2, idx, Sequence @@ $iDocCleanFigCellOpts];
+                NBAccess`NBSelectCell[nb2, idx];
+                Quiet[CurrentValue[nb2, WindowStatusArea] =
+                  iL["図を生成しました", "Diagram generated"]];
+                iDocOneShotAfter[With[{pNb = nb2},
+                  Quiet[CurrentValue[pNb, WindowStatusArea] = ""]], {3}]]]]],
+        nb, PrivacyLevel -> privLevel, Fallback -> ClaudeCode`GetPaletteFallback[]]];
+    NBAccess`NBSelectCell[nb, cellIdx];
     cellIdx
   ];
 
@@ -6739,7 +6779,7 @@ iDocPolishFigure[nb_NotebookObject, cellIdx_Integer] :=
           gfx = iDocPolishVectorOne[img, hints, ""];
           If[! MatchQ[Head[gfx], Graphics | Graphics3D],
             Return[iDocFigFail[nb, gfx, "更新"]]];
-          BoxData[ToBoxes[gfx]],
+          iDocFigureContent[gfx],
           (* 複数案 → ダイアログで選択 *)
           variants = Table[
             (Quiet[CurrentValue[nb, WindowStatusArea] =
@@ -6756,7 +6796,7 @@ iDocPolishFigure[nb_NotebookObject, cellIdx_Integer] :=
           If[! MatchQ[Head[chosen], Graphics | Graphics3D],
             iDocFigStatus[nb, iL["更新をキャンセルしました", "Polish cancelled"], 3];
             Return[$Failed]];
-          BoxData[ToBoxes[chosen]]],
+          iDocFigureContent[chosen]],
       (* --- dall-e-3 (説明 → 新規生成) --- *)
       "dalle",
         desc = iDocAnthropicLLM[iL[
