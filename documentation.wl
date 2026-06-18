@@ -5714,33 +5714,18 @@ ShowDocPalette[] := (
           (ClaudeCode`SetPaletteFallback[!ClaudeCode`GetPaletteFallback[]];
            ClaudeCode`SavePaletteSettings[InputNotebook[]]),
           Appearance -> "Frameless"]],
-      Spacer[1],
-
-      (* -- ステータス -- *)
-      Dynamic[
-        With[{nb = InputNotebook[]},
-          Style[
-            If[Head[nb] === NotebookObject,
-              Module[{n = NBAccess`NBCellCount[nb], expanded = 0, ideas = 0, translated = 0, m, st},
-                Do[
-                  m = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagMode];
-                  st = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagShowTranslation];
-                  Which[
-                    m === "paragraph", expanded++,
-                    m === "idea", ideas++,
-                    m === "translated", translated++];
-                  If[TrueQ[st], translated++],
-                {i, n}];
-                iL[" \:5c55: ", " E: "] <> ToString[expanded] <>
-                iL[" \:30a2: ", " I: "] <> ToString[ideas] <>
-                If[translated > 0,
-                  iL[" \:8a33: ", " T: "] <> ToString[translated], ""]],
-              ""],
-            8, GrayLevel[0.4]]]]
+      Spacer[1]
+      (* セル数カウント等のステータス表示は削除 (2026-06-18)。
+         全セルを走査する O(N) の FE 問い合わせがフロントエンドの整形と衝突して
+         フリーズの原因になっていたため。設定表示 (P/M/エフォート/課金API) は
+         各自の Dynamic が担う。 *)
 
     }, Alignment -> Center, Spacings -> 0],
     TrackedSymbols :> {},
-    UpdateInterval -> 2
+    (* claudecode パレットと同じく非同期更新。設定表示を claudecode 側の変更にも
+       追従させるための軽い再描画 (セル走査は無し)。 *)
+    UpdateInterval -> 8,
+    SynchronousUpdating -> False
     ],
     WindowTitle -> "Documentation",
     WindowSize -> {105, All},
