@@ -925,7 +925,8 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
       directives = iDocCollectDirectives[nb];
       dictionary = iDocCollectDictionary[nb];
       context = directives <> dictionary <> iDocCollectContext[nb, cellIdx];
-      prompt = iDocUpdateParagraphPromptFn[ideaText, currentParagraph, context];
+      prompt = iDocUpdateParagraphPromptFn[ideaText, currentParagraph,
+        context <> iDocCiteContext[nb, ideaText]];
       privLevel = NBAccess`NBCellPrivacyLevel[nb, cellIdx];
       Quiet[CurrentValue[nb, WindowStatusArea] =
         iL["パラグラフ更新中...", "Updating paragraph..."]];
@@ -995,10 +996,11 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
       NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagAlternate],
       None];
     promptFn = If[StringQ[prevParagraph] && StringTrim[prevParagraph] =!= "",
-      With[{prev = prevParagraph, ctx = context},
-        Function[t, iDocReExpandPromptFn[t, prev, ctx]]],
-      With[{ctx = context},
-        Function[t, iDocExpandPromptFn[t, ctx]]]
+      With[{prev = prevParagraph, ctx = context, nbC = nb},
+        Function[t, iDocReExpandPromptFn[t, prev,
+          ctx <> iDocCiteContext[nbC, t]]]],
+      With[{ctx = context, nbC = nb},
+        Function[t, iDocExpandPromptFn[t, ctx <> iDocCiteContext[nbC, t]]]]
     ];
 
     (* 非同期 LLM 変換: カーネルをブロックしない。
@@ -1027,15 +1029,22 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                   (* 編集追跡: 展開結果をクリーンテキストとして記録 *)
                   NBAccess`NBCellSetTaggingRule[nb2, ci,
                     $iDocTagCleanText, r["Response"]]; Pause[0.05];
-                  (* 依存資料: 展開時のアタッチメントを記録（既存設定がなければ） *)
-                  If[Length[iDocGetRefSources[nb2, ci]] === 0 &&
-                     Length[cellAtts] > 0,
-                    Module[{pdfAtts},
-                      pdfAtts = Select[cellAtts,
-                        StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
-                      If[Length[pdfAtts] > 0,
-                        iDocSetRefSources[nb2, ci,
-                          {#, All} & /@ pdfAtts]]]];
+                  (* 依存資料: 展開時のアタッチメントを記録（既存設定がなければ）。
+                     指示テキストに <<cite:key>> があれば、その解決ソース
+                     (File/URL/sv URI) を優先して記録する。 *)
+                  If[Length[iDocGetRefSources[nb2, ci]] === 0,
+                    Module[{citedSrcs, pdfAtts},
+                      citedSrcs = Quiet @ Check[
+                        iDocCitedRefSources[nb2, r["OriginalText"]], {}];
+                      Which[
+                        Length[citedSrcs] > 0,
+                          iDocSetRefSources[nb2, ci, citedSrcs],
+                        Length[cellAtts] > 0,
+                          pdfAtts = Select[cellAtts,
+                            StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
+                          If[Length[pdfAtts] > 0,
+                            iDocSetRefSources[nb2, ci,
+                              {#, All} & /@ pdfAtts]]]]];
                   (* セル選択位置を復元 *)
                   NBAccess`NBSelectCell[nb2, ci];
                   Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]],
@@ -1561,9 +1570,10 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         targetLang = If[StringQ[paragraph] && StringTrim[paragraph] =!= "",
           iDocTranslationTargetForText[paragraph],
           iDocTranslationTarget[]];
-        prompt = If[StringQ[paragraph] && StringTrim[paragraph] =!= "",
-          iDocReExpandPromptFn[ideaText, paragraph, context],
-          iDocExpandPromptFn[ideaText, context]];
+        Module[{citeCtx = iDocCiteContext[nb, ideaText]},
+          prompt = If[StringQ[paragraph] && StringTrim[paragraph] =!= "",
+            iDocReExpandPromptFn[ideaText, paragraph, context <> citeCtx],
+            iDocExpandPromptFn[ideaText, context <> citeCtx]]];
         Quiet[CurrentValue[nb, WindowStatusArea] =
           iL["同期中: パラグラフ生成...", "Syncing: generating paragraph..."]];
         iDocSetJobAnchorCell[nb, cellIdx];
@@ -1813,9 +1823,10 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
         paragraph = NBAccess`NBCellGetText[nb, cellIdx];
         translation = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagTranslation];
         If[!StringQ[paragraph], paragraph = ""];
-        prompt = If[StringTrim[paragraph] =!= "",
-          iDocReExpandPromptFn[ideaText, paragraph, context],
-          iDocExpandPromptFn[ideaText, context]];
+        Module[{citeCtx = iDocCiteContext[nb, ideaText]},
+          prompt = If[StringTrim[paragraph] =!= "",
+            iDocReExpandPromptFn[ideaText, paragraph, context <> citeCtx],
+            iDocExpandPromptFn[ideaText, context <> citeCtx]]];
         Quiet[CurrentValue[nb, WindowStatusArea] =
           iL["同期中: パラグラフ生成...", "Syncing: generating paragraph..."]];
         iDocSetJobAnchorCell[nb, cellIdx];
@@ -2349,13 +2360,15 @@ iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
       {$iDocTagRoot, "syncTag"}, syncTag];
 
     (* paragraph 更新プロンプト: 既存段落があればインプレース更新、無ければ新規展開 *)
-    prompt = Which[
-      StringTrim[currentParagraph] =!= "" && StringTrim[ideaText] =!= "",
-        iDocUpdateParagraphPromptFn[ideaText, currentParagraph, context],
-      StringTrim[ideaText] =!= "",
-        iDocExpandPromptFn[ideaText, context],
-      True, (* paragraph のみ、プロンプトなし: 既存段落を Directives に沿って更新 *)
-        iDocUpdateParagraphPromptFn["", currentParagraph, context]];
+    Module[{citeCtx = iDocCiteContext[nb, ideaText]},
+      prompt = Which[
+        StringTrim[currentParagraph] =!= "" && StringTrim[ideaText] =!= "",
+          iDocUpdateParagraphPromptFn[ideaText, currentParagraph,
+            context <> citeCtx],
+        StringTrim[ideaText] =!= "",
+          iDocExpandPromptFn[ideaText, context <> citeCtx],
+        True, (* paragraph のみ、プロンプトなし: 既存段落を Directives に沿って更新 *)
+          iDocUpdateParagraphPromptFn["", currentParagraph, context]]];
 
     iDocSetJobAnchorCell[nb, cellIdx];
     With[{nb2 = nb, origIdx = cellIdx, idea = ideaText, ctx = context,
@@ -3631,6 +3644,11 @@ iDocInsertReferenceAction[] :=
     NBAccess`NBInvalidateCellsCache[nb];
     figTable = iDocBuildFigureTable[nb];
     bibTable = iDocCollectBibliography[nb];
+    (* アタッチメント (PDF / URL / sv URI) 由来の cite キーも挿入候補に含める。
+       Bibliography セルのエントリはレジストリ構築時点で優先マージ済み。 *)
+    Module[{reg = Quiet @ Check[iDocBuildCiteRegistry[nb], <||>]},
+      If[AssociationQ[reg] && Length[reg] > 0,
+        bibTable = Join[reg, bibTable]]];
 
     If[Length[figTable] === 0 && Length[bibTable] === 0,
       MessageDialog[iL[
@@ -4839,12 +4857,13 @@ iDocExtractCellPDFContext[nb_NotebookObject, cellIdx_Integer] :=
   Module[{refs, texts = {}, atts, pdfFiles},
     refs = iDocGetRefSources[nb, cellIdx];
     If[Length[refs] > 0,
-      (* refSources が設定済み: 指定ファイル・ページのみ抽出 *)
+      (* refSources が設定済み: 指定ソース (File/URL/sv URI)・ページのみ抽出 *)
       Do[
-        Module[{f = ref[[1]], pages = ref[[2]], txt},
-          txt = iDocExtractPDFPages[f, pages];
+        Module[{f = ref[[1]], pages = ref[[2]], txt, label},
+          txt = iDocExtractSourceText[f, pages];
+          label = If[iDocRefSourceKind[f] === "File", FileNameTake[f], f];
           If[StringLength[txt] > 0,
-            AppendTo[texts, "[" <> FileNameTake[f] <> "]\n" <> txt]]],
+            AppendTo[texts, "[" <> label <> "]\n" <> txt]]],
       {ref, refs}];
       Return[StringRiffle[texts, "\n---\n"]]];
     (* フォールバック: ノートブックの全アタッチメント *)
@@ -4853,24 +4872,28 @@ iDocExtractCellPDFContext[nb_NotebookObject, cellIdx_Integer] :=
 
 (* 依存資料編集ダイアログ *)
 DocEditRefSources[nb_NotebookObject, cellIdx_Integer] :=
-  Module[{refs, atts, pdfAtts, dlgRefs, pdfNames},
+  Module[{refs, atts, candidates, dlgRefs, dispNames},
     refs = iDocGetRefSources[nb, cellIdx];
     atts = iDocGetCurrentAttachments[nb];
-    pdfAtts = Select[atts, StringEndsQ[#, ".pdf", IgnoreCase -> True] &];
-    pdfNames = FileNameTake /@ pdfAtts;
-    (* ダイアログ用: {ファイル名, ページ指定文字列, フルパス, 有効フラグ} *)
+    (* 候補 = 全アタッチメント + 既設定の URL/sv 等アタッチメント外ソース *)
+    candidates = DeleteDuplicates @ Join[atts,
+      Select[First /@ refs, !MemberQ[atts, #] &]];
+    dispNames = Map[
+      If[iDocRefSourceKind[#] === "File", FileNameTake[#],
+        StringTake[#, UpTo[50]]] &, candidates];
+    (* ダイアログ用: {表示名, ページ指定文字列, ソース文字列, 有効フラグ} *)
     dlgRefs = Table[
       Module[{existing, pageStr},
-        existing = Select[refs, #[[1]] === pdfAtts[[i]] &];
+        existing = Select[refs, #[[1]] === candidates[[i]] &];
         pageStr = If[Length[existing] > 0,
           Module[{ps = existing[[1, 2]]},
             If[ps === All, "All", StringRiffle[ToString /@ ps, ","]]],
           ""];
-        {pdfNames[[i]], pageStr, pdfAtts[[i]], pageStr =!= ""}],
-    {i, Length[pdfAtts]}];
+        {dispNames[[i]], pageStr, candidates[[i]], pageStr =!= ""}],
+    {i, Length[candidates]}];
     If[Length[dlgRefs] === 0,
-      MessageDialog[iL["アタッチされた PDF がありません。",
-        "No PDF attachments found."]];
+      MessageDialog[iL["アタッチされた資料がありません。",
+        "No attachments found."]];
       Return[$Failed]];
     DialogInput[
       DynamicModule[{rows = dlgRefs},
@@ -4921,6 +4944,290 @@ iDocEditRefSourcesAction[] :=
 
 
 (* ============================================================
+   参照ソース解決 (File / URL / sv URI) + cite キーレジストリ
+
+   refSources のソース文字列はローカルファイルパスに加えて
+   http(s) URL / SourceVault URI (sv://..) を許容する。
+   - 解決: ClaudeAttach キャッシュ (claude_attachments) →
+           SourceVault raw snapshot の順でローカルファイルへ落とす。
+   - cite レジストリ: アタッチメント・refSources・Bibliography セルから
+     <<cite:key>> → ソースの対応表を構築し、指示セル内の
+     「<<cite:owens2008>> に従って書く」等の参照を解決する。
+   ============================================================ *)
+
+(* ソース文字列の種別: "File" | "URL" | "SV" *)
+iDocRefSourceKind[src_String] :=
+  Which[
+    StringStartsQ[src, "sv://"], "SV",
+    StringMatchQ[src, ("http://" | "https://") ~~ __], "URL",
+    True, "File"];
+
+(* ソース文字列 → 読めるローカルファイル。未解決は "" *)
+iDocResolveRefSourceFile[src_String] :=
+  Module[{kind, f},
+    kind = iDocRefSourceKind[src];
+    If[kind === "File",
+      Return[If[FileExistsQ[src], src, ""]]];
+    (* URL / SV: ClaudeAttach キャッシュを優先 *)
+    If[Length[DownValues[ClaudeCode`ClaudeAttachmentCachedFile]] > 0,
+      f = Quiet @ Check[ClaudeCode`ClaudeAttachmentCachedFile[src], $Failed];
+      If[StringQ[f] && FileExistsQ[f], Return[f]]];
+    (* SourceVault raw snapshot (弱結合: 未ロードならスキップ) *)
+    If[Length[Names["SourceVault`SourceVaultResolveReference"]] > 0 &&
+       Length[DownValues[SourceVault`SourceVaultResolveReference]] > 0,
+      Module[{r = Quiet @ Check[
+          SourceVault`SourceVaultResolveReference[src], $Failed]},
+        If[AssociationQ[r] && Lookup[r, "Status", ""] === "OK" &&
+           StringQ[Lookup[r, "File", ""]] && r["File"] =!= "" &&
+           FileExistsQ[r["File"]],
+          Return[r["File"]]]]];
+    ""
+  ];
+
+(* ソースの表示タイトル: アタッチメタ title → キャッシュファイル名 (hash 除去)
+   → ソース文字列そのもの *)
+iDocRefSourceTitle[src_String] :=
+  Module[{f, meta, t, base},
+    f = iDocResolveRefSourceFile[src];
+    meta = If[f =!= "" &&
+        Length[DownValues[ClaudeCode`ClaudeAttachmentMetadata]] > 0,
+      Quiet @ Check[ClaudeCode`ClaudeAttachmentMetadata[f], <||>], <||>];
+    If[!AssociationQ[meta], meta = <||>];
+    t = Lookup[meta, "title", ""];
+    If[StringQ[t] && t =!= "", Return[t]];
+    If[f =!= "",
+      base = StringReplace[FileBaseName[f],
+        RegularExpression["\\.[0-9a-f]{8}$"] -> ""];
+      If[base =!= "", Return[base]]];
+    src
+  ];
+
+(* タイトル/名前文字列から cite キー・著者・年を推定する。
+   iDocParsePDFFileName の空白・括弧対応版 (URL/sv タイトル向け)。 *)
+iDocParseRefName[name_String] :=
+  Module[{year = "", author = "", parts, key},
+    Module[{ym = StringCases[name, RegularExpression["(19|20)\\d{2}"]]},
+      If[Length[ym] > 0, year = First[ym]]];
+    parts = StringSplit[name,
+      {" ", "-", "_", ".", ",", "(", ")", ":", ";", "\t"}];
+    parts = Select[parts,
+      StringLength[#] > 1 && !StringMatchQ[#, NumberString] &];
+    If[author === "" && Length[parts] > 0, author = First[parts]];
+    key = ToLowerCase[StringReplace[author,
+      RegularExpression["[^\\p{L}\\p{N}]"] -> ""]] <> year;
+    {key, author, year}
+  ];
+
+(* ソースからテキスト抽出 (種別を問わない汎用版)。
+   PDF はページ指定抽出、それ以外 (HTML/テキスト等) は Plaintext 全文 (上限 4000)。 *)
+iDocExtractSourceText[src_String, pages_] :=
+  Module[{f, ext, txt},
+    f = iDocResolveRefSourceFile[src];
+    If[f === "", Return[""]];
+    ext = ToLowerCase[FileExtension[f]];
+    If[ext === "pdf", Return[iDocExtractPDFPages[f, pages]]];
+    txt = Quiet[Check[Import[f, "Plaintext"], ""]];
+    If[!StringQ[txt], Return[""]];
+    StringTake[txt, Min[4000, StringLength[txt]]]
+  ];
+
+(* アタッチメントキャッシュパスを現マシンに合わせて再解決する。
+   claude_attachments は Dropbox 共有ディレクトリなので、他マシンの絶対パス
+   (例 F:\Dropbox\...) はローカルのキャッシュディレクトリ + ファイル名で
+   読み替えられる。見つからなければ ""。 *)
+iDocRebaseAttachPath[path_String] :=
+  If[FileExistsQ[path], path,
+    Module[{cand = Quiet @ Check[
+        FileNameJoin[{Global`$packageDirectory,
+          "claude_attachments", FileNameTake[path]}], ""]},
+      If[StringQ[cand] && cand =!= "" && FileExistsQ[cand], cand, ""]]];
+
+(* アタッチメント (キャッシュパス + メタ情報) から cite レジストリエントリを導出。
+   戻り値: {key, <|"Source", "File", "Title", "Author", "Year"|>} *)
+iDocRegistryEntryFromMeta[att_String, info0_] :=
+  Module[{info = info0, srcRef, title, nameForKey, key, author, year, file},
+    If[!AssociationQ[info], info = <||>];
+    srcRef = Which[
+      StringQ[Lookup[info, "svURI", None]], info["svURI"],
+      StringQ[Lookup[info, "source", None]] &&
+        iDocRefSourceKind[Lookup[info, "source", ""]] =!= "File",
+        info["source"],
+      True, att];
+    file = iDocRebaseAttachPath[att];
+    If[file === "" && srcRef =!= att,
+      file = iDocResolveRefSourceFile[srcRef]];
+    title = Lookup[info, "title", ""];
+    nameForKey = If[StringQ[title] && title =!= "", title,
+      StringReplace[FileBaseName[att],
+        RegularExpression["\\.[0-9a-f]{8}$"] -> ""]];
+    {key, author, year} = If[iDocRefSourceKind[srcRef] === "File",
+      iDocParsePDFFileName[att],
+      iDocParseRefName[nameForKey]];
+    {key, <|"Source" -> srcRef, "File" -> file,
+      "Title" -> nameForKey, "Author" -> author, "Year" -> year|>}
+  ];
+
+(* cite キーレジストリ構築:
+   <|key -> <|"Source", "File", "Title", "Author", "Year"|>, ...|>
+   1. このノートブックのアタッチメントからキー導出
+   2. 各セルの refSources のうち未収載ソース
+   3. グローバルアタッチメントメタ DB (_meta.json = 他ノートブック/過去
+      セッションのアタッチ)。現マシンで実体が読めるもののみ弱い候補として追加
+   4. Bibliography セル (キー明示 → 書誌情報を上書き)  *)
+iDocBuildCiteRegistry[nb_NotebookObject] :=
+  Module[{atts, allMeta, reg = <||>, bib, addEntry, coveredQ},
+    addEntry = Function[{key0, entry},
+      Module[{key = key0},
+        If[key === "", key = "ref" <> ToString[Length[reg] + 1]];
+        If[KeyExistsQ[reg, key],
+          If[reg[key]["Source"] =!= entry["Source"],
+            key = key <> "-" <> ToString[Length[reg] + 1];
+            reg[key] = entry],
+          reg[key] = entry]]];
+    coveredQ = Function[{srcOrFile},
+      StringQ[srcOrFile] && srcOrFile =!= "" &&
+        AnyTrue[Values[reg],
+          (#["Source"] === srcOrFile || #["File"] === srcOrFile) &]];
+    atts = iDocGetCurrentAttachments[nb];
+    allMeta = If[Length[DownValues[ClaudeCode`ClaudeAttachmentMetadata]] > 0,
+      Quiet @ Check[ClaudeCode`ClaudeAttachmentMetadata[], <||>], <||>];
+    If[!AssociationQ[allMeta], allMeta = <||>];
+    (* 1. このノートブックのアタッチメント *)
+    Do[
+      Module[{ke = iDocRegistryEntryFromMeta[att, Lookup[allMeta, att, <||>]]},
+        addEntry[ke[[1]], ke[[2]]]],
+      {att, atts}];
+    (* 2. refSources 済みソース (未収載のもの) *)
+    Module[{nCells = NBAccess`NBCellCount[nb]},
+      Do[
+        Do[
+          Module[{s = ref[[1]], title2, k2, a2, y2, f2},
+            If[!coveredQ[s],
+              title2 = iDocRefSourceTitle[s];
+              {k2, a2, y2} = If[iDocRefSourceKind[s] === "File",
+                iDocParsePDFFileName[s],
+                iDocParseRefName[title2]];
+              f2 = iDocResolveRefSourceFile[s];
+              addEntry[k2, <|"Source" -> s, "File" -> f2,
+                "Title" -> title2, "Author" -> a2, "Year" -> y2|>]]],
+          {ref, iDocGetRefSources[nb, i]}],
+        {i, nCells}]];
+    (* 3. グローバルアタッチメントメタ DB: 別ノートブックでアタッチした文献も
+       cite できるようにする (result4 検証で発覚した制限の解消)。
+       現マシンでファイル実体が解決できるもののみ追加。
+       キー衝突時は先着優先なので、投入順を「明示 Title あり → cachedAt 新しい順」
+       にソートし、ユーザーが Title を指定した新しいアタッチが基底キーを取るように
+       する (result5 検証: 旧ファイル名由来エントリがキーを先取りした問題の対策)。 *)
+    Module[{globals = KeyValueMap[List, allMeta]},
+      globals = SortBy[globals,
+        Function[{pi},
+          Module[{info = pi[[2]]},
+            If[!AssociationQ[info], {2, 0},
+              {If[StringQ[Lookup[info, "title", None]] &&
+                  Lookup[info, "title", ""] =!= "", 0, 1],
+               -Quiet @ Check[
+                  AbsoluteTime[Lookup[info, "cachedAt", ""]], 0]}]]]];
+      Do[
+        Module[{path = pi[[1]], info = pi[[2]], ke, entry},
+          If[AssociationQ[info] && !coveredQ[path],
+            ke = iDocRegistryEntryFromMeta[path, info];
+            entry = ke[[2]];
+            If[entry["File"] =!= "" &&
+               !coveredQ[entry["Source"]] && !coveredQ[entry["File"]],
+              addEntry[ke[[1]], entry]]]],
+        {pi, globals}]];
+    (* 4. Bibliography セル: キー明示 (書誌情報を上書き、File/Source は保持) *)
+    bib = iDocCollectBibliography[nb];
+    KeyValueMap[
+      Function[{k, e},
+        reg[k] = Join[
+          Lookup[reg, k, <|"Source" -> "", "File" -> ""|>],
+          <|"Author" -> Lookup[e, "Author", ""],
+            "Year" -> Lookup[e, "Year", ""],
+            "Title" -> Lookup[e, "Title", ""]|>]],
+      bib];
+    reg
+  ];
+
+(* テキスト中の <<cite:key>> キー一覧 *)
+iDocCiteKeysInText[text_String] :=
+  DeleteDuplicates @ StringCases[text,
+    RegularExpression["<<cite:([^>]+)>>"] -> "$1"];
+
+(* 指示テキスト中の <<cite:key>> を解決したプロンプトコンテキストブロック。
+   cite が無ければ ""。
+   展開/同期の本流に挟まるため、いかなる失敗でも "" に落ちる
+   (レガシー環境 = SourceVault 未ロードでも展開を壊さない)。 *)
+iDocCiteContext[nb_NotebookObject, ideaText_String] :=
+  Quiet @ Check[iDocCiteContextCore[nb, ideaText], ""];
+iDocCiteContext[___] := "";
+
+iDocCiteContextCore[nb_NotebookObject, ideaText_String] :=
+  Module[{keys, reg, lines},
+    keys = iDocCiteKeysInText[ideaText];
+    If[Length[keys] === 0, Return[""]];
+    reg = Quiet @ Check[iDocBuildCiteRegistry[nb], <||>];
+    lines = Map[
+      Function[k,
+        Module[{e = Lookup[reg, k, None], line, sibs},
+          line = Which[
+            AssociationQ[e] && StringQ[Lookup[e, "File", ""]] &&
+              e["File"] =!= "" && FileExistsQ[e["File"]],
+              "cite:" <> k <> " = " <> Lookup[e, "Author", ""] <> " " <>
+                Lookup[e, "Year", ""] <> ", " <> Lookup[e, "Title", ""] <>
+                "\n  source: " <> ToString @ Lookup[e, "Source", ""] <>
+                "\n  FILE (READ this file for the cited content): " <> e["File"],
+            AssociationQ[e],
+              "cite:" <> k <> " = " <> Lookup[e, "Author", ""] <> " " <>
+                Lookup[e, "Year", ""] <> ", " <> Lookup[e, "Title", ""] <>
+                "\n  source: " <> ToString @ Lookup[e, "Source", ""] <>
+                " (no local file; use bibliographic info only)",
+            True,
+              "cite:" <> k <>
+                " = UNRESOLVED (no matching attachment or bibliography entry)"];
+          (* キー衝突で退避された同基底キー (key-N) があれば注記して可視化 *)
+          sibs = Select[Keys[reg],
+            StringMatchQ[#, k ~~ "-" ~~ Repeated[DigitCharacter]] &];
+          If[Length[sibs] > 0,
+            line = line <>
+              "\n  note: other documents share this base key: " <>
+              StringRiffle[
+                Map[(# <> " = " <>
+                  ToString @ Lookup[Lookup[reg, #, <||>], "Title", ""]) &,
+                  sibs], "; "]];
+          line]],
+      keys];
+    "=== Cited references (the instruction refers to these via <<cite:key>>) ===\n" <>
+      StringRiffle[lines, "\n"] <> "\n" <>
+      "Rules: base the cited content ONLY on these sources (READ the FILE when given). " <>
+      "Keep each <<cite:key>> marker verbatim in the output at the natural citation position.\n" <>
+      "=== End cited references ===\n\n"
+  ];
+
+(* 指示テキスト中の <<cite:key>> から refSources リスト {{src, All}..} を構築。
+   失敗時は {} (レガシー環境でも展開完了処理を壊さない)。 *)
+iDocCitedRefSources[nb_NotebookObject, ideaText_String] :=
+  Quiet @ Check[iDocCitedRefSourcesCore[nb, ideaText], {}];
+iDocCitedRefSources[___] := {};
+
+iDocCitedRefSourcesCore[nb_NotebookObject, ideaText_String] :=
+  Module[{keys, reg, srcs = {}},
+    keys = iDocCiteKeysInText[ideaText];
+    If[Length[keys] === 0, Return[{}]];
+    reg = Quiet @ Check[iDocBuildCiteRegistry[nb], <||>];
+    Do[
+      Module[{e = Lookup[reg, k, None], s},
+        If[AssociationQ[e],
+          s = Lookup[e, "Source", ""];
+          If[!StringQ[s] || s === "", s = Lookup[e, "File", ""]];
+          If[StringQ[s] && s =!= "" && !MemberQ[First /@ srcs, s],
+            AppendTo[srcs, {s, All}]]]],
+      {k, keys}];
+    srcs
+  ];
+
+
+(* ============================================================
    自動引用挿入 (Auto-Citation) — 非同期チェーン実行
    
    Phase 1: refSources から文献リスト構築 + LLM で書誌情報を正確化
@@ -4943,21 +5250,29 @@ iDocParsePDFFileName[path_String] :=
     {key, author, year}
   ];
 
-(* 初期文献データベースを refSources から構築する *)
+(* 初期文献データベースを refSources から構築する。
+   ソースはファイルパスに加えて URL / sv URI を許容する
+   ("SourceKind" キーで区別、"FilePath" にはソース文字列をそのまま保持)。 *)
 iDocBuildBibFromRefSources[nb_NotebookObject] :=
   Module[{nCells, refs, bib = <||>, seen = <||>},
     nCells = NBAccess`NBCellCount[nb];
     Do[
       refs = iDocGetRefSources[nb, i];
-      Do[Module[{f = ref[[1]], parsed, key, author, year},
+      Do[Module[{f = ref[[1]], key, author, year, kind, title},
         If[!KeyExistsQ[seen, f],
           seen[f] = True;
-          parsed = iDocParsePDFFileName[f];
-          {key, author, year} = parsed;
+          kind = iDocRefSourceKind[f];
+          If[kind === "File",
+            {key, author, year} = iDocParsePDFFileName[f];
+            title = FileBaseName[f],
+            (* URL / SV: タイトルから推定 *)
+            title = iDocRefSourceTitle[f];
+            {key, author, year} = iDocParseRefName[title]];
+          If[key === "", key = "ref" <> ToString[Length[bib] + 1]];
           If[KeyExistsQ[bib, key],
             key = key <> "-" <> ToString[Length[bib] + 1]];
           bib[key] = <|"Author" -> author, "Year" -> year,
-            "Title" -> FileBaseName[f], "FilePath" -> f,
+            "Title" -> title, "FilePath" -> f, "SourceKind" -> kind,
             "CiteKey" -> key, "Enriched" -> False, "AutoInserted" -> False,
             "Unrelated" -> False|>]],
       {ref, refs}],
@@ -5034,10 +5349,14 @@ iDocEnrichBibChain[nb_, bibDB_, keys_, pos_, completionFn_, fb_] :=
         Quiet[CurrentValue[nb, WindowStatusArea] =
           iL["文献情報を取得中: ", "Enriching bibliography: "] <>
             ToString[pos] <> "/" <> ToString[Length[keys]]];
-        pdfText = If[StringQ[entry["FilePath"]] && FileExistsQ[entry["FilePath"]],
-          Quiet[Check[Import[entry["FilePath"], "Plaintext"], ""]], ""];
+        pdfText = If[StringQ[entry["FilePath"]],
+          iDocExtractSourceText[entry["FilePath"], All], ""];
         prompt = iDocEnrichBibPrompt[
-          If[StringQ[pdfText], pdfText, ""], FileNameTake[entry["FilePath"]]];
+          If[StringQ[pdfText], pdfText, ""],
+          If[Lookup[entry, "SourceKind", "File"] === "File",
+            FileNameTake[entry["FilePath"]],
+            ToString @ Lookup[entry, "Title", entry["FilePath"]] <>
+              " (" <> entry["FilePath"] <> ")"]];
         NBAccess`$NBLLMQueryFunc[prompt,
           Function[response,
             Module[{parsed, updatedDB = bibDB},
@@ -5227,7 +5546,11 @@ iDocGenerateBibCell[nb_NotebookObject, bibDB_Association] :=
                  StringLength[e["Volume"]] > 0, " " <> e["Volume"], ""] <>
               If[StringQ[Lookup[e, "Pages", ""]] &&
                  StringLength[e["Pages"]] > 0, ", pp. " <> e["Pages"], ""],
-              ""] <> "\"}"] & /@ normalEntries),
+              ""] <>
+            (* URL / sv URI ソースは出典を併記 *)
+            If[Lookup[e, "SourceKind", "File"] =!= "File" &&
+               StringQ[Lookup[e, "FilePath", ""]] && e["FilePath"] =!= "",
+              " <" <> e["FilePath"] <> ">", ""] <> "\"}"] & /@ normalEntries),
           (Module[{e = mergedBib[#]},
             "{\"" <> # <> "\", \"" <> Lookup[e, "Author", "?"] <>
             "\", \"" <> Lookup[e, "Year", "?"] <>
@@ -5550,12 +5873,36 @@ iDocInsertDirectiveAction[] :=
    メインパレット
    ============================================================ *)
 
+(* 設定ラベル (P/M/エフォート/課金API) は自前変数に保持し、各設定ボタンの
+   クリック時に iDocRefreshSettingsLabels[] で更新する。
+   旧実装はパレット本体を UpdateInterval -> 8 の常駐 Dynamic で包み、毎描画で
+   ClaudeCode 関数を preemptive 評価していたが、これは別ノートブックの長時間
+   ClaudeEval 等でカーネルが占有されている間に FE をデッドロックさせた
+   (このファイル 6454-6456 のコメント参照 / claudecode.wl と同一病理)。
+   SlideWorkflow.wl と同じく常駐タイマを廃止し、各ラベルはローカル変数を追う
+   軽い Dynamic (SynchronousUpdating -> False) にする。 *)
+$iDocProviderLabel = "P: -";
+$iDocModelLabel = "M: -";
+$iDocEffortLabel = "Effort: -";
+$iDocFallbackLabel = "Paid API: -";
+
+iDocRefreshSettingsLabels[] := If[Length[DownValues[ClaudeCode`GetPaletteProvider]] > 0,
+  $iDocProviderLabel = iL["P: ", "P: "] <> ToString[Quiet[Check[
+    ClaudeCode`PaletteProviderLabel[ClaudeCode`GetPaletteProvider[]], "?"]]];
+  $iDocModelLabel = iL["M: ", "M: "] <> ToString[Quiet[Check[
+    ClaudeCode`PaletteShortenModelName[ClaudeCode`GetPaletteModelName[]], "?"]]];
+  $iDocEffortLabel = iL["エフォート: ", "Effort: "] <> Switch[Quiet[ClaudeCode`GetPaletteEffort[]],
+    "low", "Low", "medium", "Medium", "high", "High", "max", "Max", _, "Medium"];
+  $iDocFallbackLabel = iL["課金API: ", "Paid API: "] <> If[TrueQ[Quiet[ClaudeCode`GetPaletteFallback[]]],
+    iL["許可", "On"], iL["禁止", "Off"]]];
+
 ShowDocPalette[] := (
   If[$docPalette =!= None, Quiet@NotebookClose[$docPalette]];
   Module[{initNb = Quiet[InputNotebook[]]},
     If[Head[initNb] === NotebookObject,
       ClaudeCode`LoadPaletteSettings[initNb]]];
   $iDocLastPaletteNb = None;
+  iDocRefreshSettingsLabels[];
   $docPalette = Quiet[CreatePalette[
     Dynamic[
       Module[{curNb = Quiet[InputNotebook[]]},
@@ -5674,46 +6021,41 @@ ShowDocPalette[] := (
          P ボタン: claudecode -> anthropic -> openai -> lmstudio 循環。
          M ボタン: 現プロバイダの候補モデルを循環。
          claudecode.wl Public API (Get/Set/Cycle PaletteProvider/Model) を使用。 *)
-      Dynamic[
-        Button[
-          Style[iL["P: ", "P: "] <>
-            ClaudeCode`PaletteProviderLabel[ClaudeCode`GetPaletteProvider[]],
-            9, Bold, GrayLevel[0.2]],
-          (ClaudeCode`CyclePaletteProvider[];
-           ClaudeCode`SetPaletteEffort["medium"];
-           ClaudeCode`SavePaletteSettings[InputNotebook[]]),
-          Appearance -> "Frameless"]],
-      Dynamic[
-        Button[
-          Style[iL["M: ", "M: "] <>
-            ClaudeCode`PaletteShortenModelName[ClaudeCode`GetPaletteModelName[]],
-            9, Bold, GrayLevel[0.2]],
-          (ClaudeCode`CyclePaletteModel[];
-           ClaudeCode`SavePaletteSettings[InputNotebook[]]),
-          Appearance -> "Frameless"]],
-      Dynamic[
-        Button[
-          Style[iL["エフォート: ", "Effort: "] <>
-            Switch[ClaudeCode`GetPaletteEffort[],
-              "low", "Low", "medium", "Medium", "high", "High", "max", "Max", _, "Medium"],
-            9, Bold, GrayLevel[0.2]],
-          If[ClaudeCode`GetPaletteModel[] =!= "sonnet",
-            Module[{newEffort},
-              newEffort = Switch[ClaudeCode`GetPaletteEffort[],
-                "low", "medium", "medium", "high", "high", "max", "max", "low", _, "medium"];
-              ClaudeCode`SetPaletteEffort[newEffort];
-              ClaudeCode`SavePaletteSettings[InputNotebook[]]]],
-          Appearance -> "Frameless"]],
-      Dynamic[
-        Button[
-          Style[iL["課金API: ", "Paid API: "] <>
-            If[ClaudeCode`GetPaletteFallback[],
-              iL["許可", "On"],
-              iL["禁止", "Off"]],
-            9, Bold, GrayLevel[0.2]],
-          (ClaudeCode`SetPaletteFallback[!ClaudeCode`GetPaletteFallback[]];
-           ClaudeCode`SavePaletteSettings[InputNotebook[]]),
-          Appearance -> "Frameless"]],
+      (* 常駐 Dynamic 廃止: 各ボタンはラベルだけを自前変数で Dynamic 表示し、
+         クリック時に iDocRefreshSettingsLabels[] で更新する (SlideWorkflow.wl 同型)。 *)
+      Button[
+        Dynamic[Style[$iDocProviderLabel, 9, Bold, GrayLevel[0.2]],
+          TrackedSymbols :> {$iDocProviderLabel}, SynchronousUpdating -> False],
+        (ClaudeCode`CyclePaletteProvider[];
+         ClaudeCode`SetPaletteEffort["medium"];
+         ClaudeCode`SavePaletteSettings[InputNotebook[]];
+         iDocRefreshSettingsLabels[]),
+        Appearance -> "Frameless", Method -> "Queued"],
+      Button[
+        Dynamic[Style[$iDocModelLabel, 9, Bold, GrayLevel[0.2]],
+          TrackedSymbols :> {$iDocModelLabel}, SynchronousUpdating -> False],
+        (ClaudeCode`CyclePaletteModel[];
+         ClaudeCode`SavePaletteSettings[InputNotebook[]];
+         iDocRefreshSettingsLabels[]),
+        Appearance -> "Frameless", Method -> "Queued"],
+      Button[
+        Dynamic[Style[$iDocEffortLabel, 9, Bold, GrayLevel[0.2]],
+          TrackedSymbols :> {$iDocEffortLabel}, SynchronousUpdating -> False],
+        (If[ClaudeCode`GetPaletteModel[] =!= "sonnet",
+           Module[{newEffort},
+             newEffort = Switch[ClaudeCode`GetPaletteEffort[],
+               "low", "medium", "medium", "high", "high", "max", "max", "low", _, "medium"];
+             ClaudeCode`SetPaletteEffort[newEffort];
+             ClaudeCode`SavePaletteSettings[InputNotebook[]]]];
+         iDocRefreshSettingsLabels[]),
+        Appearance -> "Frameless", Method -> "Queued"],
+      Button[
+        Dynamic[Style[$iDocFallbackLabel, 9, Bold, GrayLevel[0.2]],
+          TrackedSymbols :> {$iDocFallbackLabel}, SynchronousUpdating -> False],
+        (ClaudeCode`SetPaletteFallback[!ClaudeCode`GetPaletteFallback[]];
+         ClaudeCode`SavePaletteSettings[InputNotebook[]];
+         iDocRefreshSettingsLabels[]),
+        Appearance -> "Frameless", Method -> "Queued"],
       Spacer[1]
       (* セル数カウント等のステータス表示は削除 (2026-06-18)。
          全セルを走査する O(N) の FE 問い合わせがフロントエンドの整形と衝突して
@@ -5722,9 +6064,13 @@ ShowDocPalette[] := (
 
     }, Alignment -> Center, Spacings -> 0],
     TrackedSymbols :> {},
-    (* claudecode パレットと同じく非同期更新。設定表示を claudecode 側の変更にも
-       追従させるための軽い再描画 (セル走査は無し)。 *)
-    UpdateInterval -> 8,
+    (* 2026-07-21 フリーズ修正: 旧実装は UpdateInterval -> 8 の常駐ポーリングで
+       本体全体を再描画し、別ノートブックの長時間 ClaudeEval や SourceVault の
+       メールシャード読込等でカーネルが占有されている間に FE をデッドロックさせた
+       (このファイル 6454-6456 のコメントで既知の症状。claudecode.wl と同一病理)。
+       常駐タイマを廃止。設定ラベル (P/M/エフォート/課金API) は各自のローカル変数を
+       追う Dynamic が担い、iDocRefreshSettingsLabels[] (各設定ボタンのクリック時) で
+       更新する。外側 Dynamic は TrackedSymbols :> {} で初回のみ描画 (常駐背景評価ゼロ)。 *)
     SynchronousUpdating -> False
     ],
     WindowTitle -> "Documentation",
