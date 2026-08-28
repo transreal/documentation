@@ -40,7 +40,7 @@ Documentation パッケージは、Mathematica ノートブック上で **LLM �
 - **依存資料**: セルの内容生成に使用した PDF 資料とページ番号を記録
 - **自動引用挿入**: 依存資料から文献リストを構築し、本文に引用マーカーを自動挿入
 - **除外切替**: 選択セルをエクスポート対象外に設定/解除
-- **エクスポート** *(試験的)*: ノートブックを Markdown、LaTeX、または MS-Word 形式で出力（+Math オプションで数式を LLM により自動フォーマット）
+- **エクスポート** *(試験的)*: ノートブックを Markdown、LaTeX、または MS-Word 形式で出力（+Math オプションで数式を LLM により自動フォーマット。LaTeX エクスポートは Unicode 数式記号の決定的変換や pLaTeX/pdfLaTeX 両対応も備える）
 
 ---
 
@@ -380,6 +380,7 @@ $DocTranslationLanguage = "French"
 - **ラベル**（参照用キー）: 本文から `<<fig:label>>` と記述して参照します。LaTeX エクスポート時は `\ref{fig:label}` に変換されます
 - **キャプション**: 図の下に表示される説明文です
 - 設定後はエクスポート時に `figure` 環境（LaTeX）または適切な Markdown 形式で出力されます
+- **上級者向け**: 図セルの TaggingRules に `documentation/figFullPage -> True` を手動で設定すると、LaTeX エクスポート時にその図だけ独立ページの全ページ図（`[p]` 配置）として出力されます。付録の一覧図など、ページいっぱいに大きく見せたい図に使用します（ダイアログからは設定できません）
 
 **本文中での参照例**:
 ```
@@ -511,8 +512,13 @@ $DocTranslationLanguage = "French"
 - 画像は本文幅いっぱい（`\includegraphics[width=\textwidth]`）で出力されます
 - `<<fig:label>>` は `\ref{fig:label}` に、`<<cite:key>>` は `\cite{key}` に変換されます
 - 参考文献は `thebibliography` 環境として末尾に自動出力されます
+- **決定的な数式サニタイズ（LLM 不使用、+Math の有無によらず常に適用）**: 本文中の Unicode 数学記号（添字・上付き文字、ギリシャ文字、∈ ∀ ∑ ∫ 等の記号、→ ⇒ ↦ 等の矢印、ℝ ℂ ℤ ℕ ℚ などのブラックボード太字、アクセント付きラテン文字など）を決定的なルールで対応する LaTeX コマンドに変換し、`_ ^ # % &` などの特殊文字はエスケープします。`\cite{}` / `\ref{}` のキーも ASCII に正規化されます
+- 本文中に既に `$...$` / `\(...\)` 形式で書かれた数式や、`\cite{}`・`\ref{}`・`\figurename~\ref{}`・`\label{}` は変換の対象外として保護され、二重に変換されることはありません
+- **pLaTeX/upLaTeX と pdfLaTeX の両対応**: 出力される単一の `.tex` は `\RequirePackage{iftex}` によりコンパイル時のエンジンを自動判別します。pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overleaf の和文設定と同等）でも pdfLaTeX（`article` + `CJKutf8`）でも、そのままコンパイルできます
+- 図は `[!htbp]` と高さ制限（`\topfraction` 等の float パラメータ緩和）により、本文の参照位置に近い場所へ配置されます（フロートが文末に押し流されて印刷時に読めなくなる問題への対策）
+- 図セルの TaggingRules に `documentation/figFullPage -> True` を設定すると、その図だけ独立ページの全ページ図（`[p]` 配置）として出力できます（「■ 図メタ」節を参照）
 
-**使いどころ**: 論文・技術文書の LaTeX ソースとして仕上げたいとき。**+Math** は Mathematica の数式セルではなく、テキスト中に書かれた数式（例: 「f(x) = x^2 + 1」のような表現）を適切な LaTeX 形式にしたいときに使います。
+**使いどころ**: 論文・技術文書の LaTeX ソースとして仕上げたいとき。**+Math** は Mathematica の数式セルではなく、テキスト中に書かれた数式（例: 「f(x) = x^2 + 1」のような表現）を LLM でより丁寧に整形したいときに使います。決定的な記号変換や pLaTeX/pdfLaTeX 両対応・図配置の最適化は、+Math を付けなくても常に適用されます。
 
 #### → Word / +Math
 
@@ -829,6 +835,8 @@ $DocTranslationLanguage = "English"
 
 4. エクスポート時にラベルが適切な形式（LaTeX: `\ref{fig:architecture}`、Markdown: `{#fig-architecture width=100%}`）に変換される
 
+5. 付録の一覧図など、図をページいっぱいに大きく見せたい場合は、そのセルの TaggingRules に `documentation/figFullPage -> True` を設定すると、LaTeX エクスポート時に独立ページの全ページ図として出力される
+
 ---
 
 ### ワークフロー 9: 参考文献を管理する
@@ -873,6 +881,7 @@ $DocTranslationLanguage = "English"
 4. パレットの **→ Markdown**、**LaTeX**、または **Word** をクリックする
 
    - 数式を LLM で自動フォーマットしたい場合は **+Math** 付きのボタンを使用する
+   - LaTeX エクスポートでは、Unicode 数式記号の決定的変換・図の配置最適化・pLaTeX/pdfLaTeX 両対応が +Math の有無によらず常に適用される
 
 5. エクスポートが完了すると、`NotebookDirectory[]` 内に対応するフォルダ・ファイルが作成されます
 
@@ -1394,6 +1403,9 @@ DocExportLaTeX[nb, "MathFormat" -> True]
 - `<<fig:label>>` は `\ref{fig:label}` に、`<<cite:key>>` は `\cite{key}` に変換
 - 参考文献は `thebibliography` 環境として末尾に自動出力
 - `"MathFormat" -> True` の場合、インライン数式に加えて Box 式・FormBox を含む Mathematica 数式表現も LLM が適切な LaTeX 形式に変換する
+- **`"MathFormat"` の値に関わらず常に適用される決定的変換（LLM 不使用）**: 本文中の Unicode 数式記号（添字・上付き文字、ギリシャ文字、集合論・論理記号、矢印、ブラックボード太字 `ℝ ℂ ℤ ℕ ℚ`、アクセント付きラテン文字など）を対応する LaTeX コマンドに変換し、`_ ^ # % &` 等をエスケープする。既存の `$...$` / `\(...\)` 数式や `\cite{}`・`\ref{}`・`\figurename~\ref{}`・`\label{}` は保護され再変換されない。`\cite{}` / `\ref{}` のキーは ASCII に正規化される
+- **エンジン自動判別**: 生成される `.tex` は `\RequirePackage{iftex}` を用いて pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overleaf の和文設定相当）と pdfLaTeX（`article` + `CJKutf8`）のどちらでもコンパイルできるようにプリアンブルを切り替える
+- **図の配置**: `[!htbp]` と float パラメータ調整（`\topfraction` 等）により図が本文の参照位置付近にとどまるようにする。図セルの TaggingRules `documentation/figFullPage -> True` を設定すると、その図のみ独立した全ページ図（`[p]`）として出力される
 
 **例**
 
@@ -1562,6 +1574,8 @@ $ClaudeLMStudioIntegrations = {"mcp/exa"}
 - **修正（Refine）と更新（Polish）はセル本文を上書きします。** idea モード・compute モード・メタセルは自動でスキップされます。翻訳付きセルでは翻訳側も連鎖的に更新されます。
 - **⇌ 一括同期は強い影響操作です。** ノートブック全体の paragraph / idea セルを再生成し、翻訳がある場合は翻訳も連鎖更新します。実行前の確認ダイアログで件数・コスト・時間を必ず確認してください。指示・辞書セルの最終更新時刻より後に編集されたセルは「既に最新」として自動スキップされます。
 - LaTeX エクスポート時の画像は本文幅いっぱいに出力されます（`\includegraphics[width=\textwidth]`）。
+- **LaTeX エクスポートは常に決定的な Unicode 数式記号サニタイズ（LLM 不使用）を適用します。** 添字・ギリシャ文字・矢印・ブラックボード太字・アクセント付き文字などが LaTeX コマンドに変換され、既存の `$...$` / `\cite{}` / `\ref{}` / `\label{}` は保護されます。出力される `.tex` は `iftex` によりエンジン（pLaTeX/upLaTeX または pdfLaTeX）を自動判別するため、Overleaf の和文設定でも手元の pdfLaTeX 環境でもそのままコンパイルできます。
+- 図は `[!htbp]` と高さ制限で本文参照位置の近くに配置されます。特定の図だけページいっぱいの独立図にしたい場合は、図セルの TaggingRules に `documentation/figFullPage -> True` を設定してください。
 - **LMStudio ローカルモデルを使用する場合は、パッケージロード前に LMStudio のローカルサーバーを起動しておいてください。** `$ClaudeModel` をリストに設定している間は、パレットの課金 API 設定や Fallback オプションに関わらず LMStudio が優先されます。
 - **プロバイダ（P）ボタン** は claudecode → anthropic → openai → lmstudio を循環します。プロバイダを切り替えるとエフォートは `medium` にリセットされます。
 - **モデル（M）ボタン** は現在のプロバイダで利用可能なモデル候補を循環します。候補リストは claudecode パッケージが管理しています。

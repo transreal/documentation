@@ -89,7 +89,12 @@ DocExportLaTeX::usage =
   "Note, Dictionary, Directive, Bibliography スタイルのセルは出力から除外される。\n" <>
   "画像: ラスター→PNG, ベクター/計算結果→PDF で保存。\n" <>
   "<<fig:label>> は \\ref{fig:label} に、<<cite:key>> は \\cite{key} に変換される。\n" <>
-  "Options: \"MathFormat\" -> False（True で LLM による数式自動フォーマット）";
+  "本文中の Unicode 数学記号 (添字・ギリシャ文字・∈ → × ⌈ 等) は決定的に LaTeX 数式へ変換し、\n" <>
+  "_ ^ # % & 等はエスケープする (LLM 不要)。\\cite/\\ref のキーは ASCII に正規化される。\n" <>
+  "プリアンブルは pLaTeX/upLaTeX (jsarticle+dvipdfmx, Overleaf の和文設定) と pdfLaTeX (CJKutf8) の\n" <>
+  "両方で通るよう iftex で自動切替する。図は [!htbp] + 高さ制限で参照位置付近に置く。\n" <>
+  "図セルの TaggingRules documentation/figFullPage -> True で独立ページ [p] の全ページ図にする (付録の一覧図など)。\n" <>
+  "Options: \"MathFormat\" -> False（True で LLM による数式自動フォーマットを追加で行う）";
 
 DocExportWord::usage =
   "DocExportWord[nb] はノートブックを Word (.docx) 形式でエクスポートする。\n" <>
@@ -320,6 +325,7 @@ $iDocTagShowTranslation = {$iDocTagRoot, "showTranslation"};
 $iDocTagExcludeExport = {$iDocTagRoot, "excludeExport"};
 $iDocTagFigLabel = {$iDocTagRoot, "figLabel"};
 $iDocTagFigCaption = {$iDocTagRoot, "figCaption"};
+$iDocTagFigFullPage = {$iDocTagRoot, "figFullPage"}; (* True: LaTeX で独立ページ [p] の全ページ図 *)
 $iDocTagCleanText = {$iDocTagRoot, "cleanText"};
 $iDocTagCleanMode = {$iDocTagRoot, "cleanMode"};
 $iDocTagRefSources = {$iDocTagRoot, "refSources"};
@@ -4159,6 +4165,30 @@ iDocImageType[cellExpr_] :=
     True, "none"
   ];
 
+(* セル式に埋め込まれた RasterBox から、ピクセル数を保ったまま Image を復元する。
+   ToBoxes[Image] 由来の RasterBox は範囲が {{0,h},{w,0}} (先頭行が上端)、
+   Raster 由来は {{0,0},{w,h}} (先頭行が下端) なので、y の向きで行順を判定する。
+   復元できなければ $Failed。 *)
+iDocEmbeddedRasterImage[cellExpr_] :=
+  Module[{rbs, rb, data, range, vals, img, flip},
+    rbs = Cases[cellExpr, _RasterBox, Infinity];
+    If[rbs === {}, Return[$Failed]];
+    (* 最も大きいものを採用 *)
+    rb = First[SortBy[rbs, -Times @@ Take[Dimensions[
+      If[Head[#[[1]]] === CompressedData, Uncompress[#[[1]]], #[[1]]]], 2] &]];
+    data = rb[[1]];
+    If[Head[data] === CompressedData, data = Uncompress[data]];
+    (* NotebookRead の結果では NumericArray になっていることが多い *)
+    If[!(ListQ[data] || NumericArrayQ[data]) || Length[Dimensions[data]] < 2, Return[$Failed]];
+    range = If[Length[rb] >= 2, rb[[2]], {{0, 0}, {1, 1}}];
+    vals = If[Length[rb] >= 3, rb[[3]], Automatic];
+    flip = !(MatchQ[range, {{_, y0_}, {_, y1_}} /; y0 > y1]);
+    If[flip, data = Reverse[Normal[data]]];
+    img = Quiet[Check[
+      If[MatchQ[vals, {0, 255}], Image[data, "Byte"], Image[data]],
+      $Failed]];
+    If[ImageQ[img] && Min[ImageDimensions[img]] > 1, img, $Failed]];
+
 (* セルの画像をファイルにエクスポートする。
    戻り値: エクスポートされたファイルパス、または $Failed *)
 iDocExportCellImage[nb_NotebookObject, cellIdx_Integer, outDir_String,
@@ -4168,10 +4198,18 @@ iDocExportCellImage[nb_NotebookObject, cellIdx_Integer, outDir_String,
     imgType = iDocImageType[cellExpr];
     Which[
       imgType === "raster",
-        (* ラスター画像: PNG で出力（印刷品質 300 DPI） *)
+        (* ラスター画像: セルに埋め込まれた画素データをそのままのピクセル数で PNG 出力する。
+           (表示サイズを基準に Rasterize すると FE の表示倍率次第で 375px 程度に
+            落ちてしまい印刷で読めなくなる 2026-08-17)。
+           取り出せない場合のみ従来どおり Rasterize (300 DPI) にフォールバック。 *)
         filePath = FileNameJoin[{outDir, baseName <> ".png"}];
-        NBAccess`NBCellRasterize[nb, cellIdx, filePath,
-          ImageResolution -> 300];
+        If[FileExistsQ[filePath], Quiet[DeleteFile[filePath]]];
+        Module[{img = iDocEmbeddedRasterImage[cellExpr]},
+          If[ImageQ[img],
+            Quiet[Check[Export[filePath, img, "PNG"], $Failed]]]];
+        If[!FileExistsQ[filePath],
+          NBAccess`NBCellRasterize[nb, cellIdx, filePath,
+            ImageResolution -> 300]];
         If[FileExistsQ[filePath], filePath, $Failed],
       imgType === "vector",
         (* ベクター画像: PDF で出力 (ベクター品質維持) *)
@@ -4251,11 +4289,8 @@ iDocOutputCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
               "](" <> relPath <> ")" <>
               "{#fig-" <> figLabel <> " width=100%}",
             (* LaTeX: figure 環境 *)
-            "\\begin{figure}[h]\n" <>
-            "\\centerline{\\includegraphics[width=\\textwidth]{" <> relPath <> "}}\n" <>
-            "\\caption{" <> figCaption <> "}\n" <>
-            "\\label{fig:" <> figLabel <> "}\n" <>
-            "\\end{figure}"]],
+            iDocLaTeXFigureEnv[relPath, figCaption, figLabel,
+              TrueQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigFullPage]]]]],
         (* 画像エクスポート失敗: テキストにフォールバック *)
         text = NBAccess`NBCellGetText[nb, cellIdx];
         If[StringQ[text], text, ""]],
@@ -4499,11 +4534,8 @@ iDocCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
                 "](" <> relPath <> ")" <>
                 "{#fig-" <> figLabel <> " width=100%}",
               (* LaTeX *)
-              "\\begin{figure}[h]\n" <>
-              "\\centerline{\\includegraphics[width=\\textwidth]{" <> relPath <> "}}\n" <>
-              "\\caption{" <> figCaption <> "}\n" <>
-              "\\label{fig:" <> figLabel <> "}\n" <>
-              "\\end{figure}"];
+              iDocLaTeXFigureEnv[relPath, figCaption, figLabel,
+                TrueQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigFullPage]]]];
             (* テキスト系セルなら本文テキストも出力 *)
             If[MemberQ[{"Text", "Section", "Subsection", "Subsubsection",
                         "Title", "Subtitle", "Chapter", "Item", "Subitem",
@@ -4685,6 +4717,377 @@ iDocPostProcessLaTeXLists[text_String] :=
   ];
 
 (* LaTeX エクスポート *)
+
+(* ============================================================
+   LaTeX サニタイズ (決定的変換, LLM 不使用)  2026-08-17
+
+   ノートブック本文をそのまま .tex に書き出すと、
+     - Unicode の数学記号 (₁ ⁵ ℤ γ ∈ → × ⌈ ∎ …) が pLaTeX / pdfLaTeX で
+       「Missing character」や「Not two-byte family」になる
+     - _ ^ # % & { } などが特殊文字として解釈され「Missing $ inserted」等になる
+   ため、エクスポート時に以下を決定的に行う。
+     1. \cite{} \ref{} \figurename~\ref{} \label{} と既存の $...$ / \(...\) は保護
+     2. 和文(CJK)以外の連続部分を「数式らしいか」で判定し、数式なら
+        Unicode 記号を LaTeX 数式コマンドへ変換して $...$ で囲む
+     3. 数式でない部分は特殊文字をエスケープし、× ° ± “ ” – … 等を置換
+   ============================================================ *)
+
+(* --- 文字テーブル (\:XXXX 表記で記す。ファイル文字コードに依存しない) --- *)
+$iDocTeXSubscriptMap = <|
+  "\:2080" -> "0", "\:2081" -> "1", "\:2082" -> "2", "\:2083" -> "3", "\:2084" -> "4",
+  "\:2085" -> "5", "\:2086" -> "6", "\:2087" -> "7", "\:2088" -> "8", "\:2089" -> "9",
+  "\:208a" -> "+", "\:208b" -> "-", "\:208c" -> "=", "\:208d" -> "(", "\:208e" -> ")",
+  "\:2090" -> "a", "\:2091" -> "e", "\:2092" -> "o", "\:2093" -> "x", "\:2095" -> "h",
+  "\:2096" -> "k", "\:2097" -> "l", "\:2098" -> "m", "\:2099" -> "n", "\:209a" -> "p",
+  "\:209b" -> "s", "\:209c" -> "t", "\:1d62" -> "i", "\:2c7c" -> "j", "\:1d63" -> "r",
+  "\:1d64" -> "u", "\:1d65" -> "v", "\:1d66" -> "\\beta", "\:1d67" -> "\\gamma",
+  "\:1d68" -> "\\rho", "\:1d69" -> "\\varphi", "\:1d6a" -> "\\chi"|>;
+
+$iDocTeXSuperscriptMap = <|
+  "\:2070" -> "0", "\:00b9" -> "1", "\:00b2" -> "2", "\:00b3" -> "3", "\:2074" -> "4",
+  "\:2075" -> "5", "\:2076" -> "6", "\:2077" -> "7", "\:2078" -> "8", "\:2079" -> "9",
+  "\:207a" -> "+", "\:207b" -> "-", "\:207c" -> "=", "\:207d" -> "(", "\:207e" -> ")",
+  "\:207f" -> "n", "\:2071" -> "i", "\:02b3" -> "r", "\:1d40" -> "T", "\:1d48" -> "d",
+  "\:1d4f" -> "k", "\:1d50" -> "m", "\:1d56" -> "p", "\:1d57" -> "t", "\:1d58" -> "u",
+  "\:1d5b" -> "v", "\:02e3" -> "x", "\:02b8" -> "y", "\:1da2" -> "z", "\:1d43" -> "a",
+  "\:1d47" -> "b", "\:1d9c" -> "c", "\:1d49" -> "e", "\:1da0" -> "f", "\:1d4d" -> "g",
+  "\:02b0" -> "h", "\:02b2" -> "j", "\:02e1" -> "l", "\:1d52" -> "o", "\:02e2" -> "s",
+  "\:02b7" -> "w", "\:00b0" -> "\\circ"|>;
+
+(* 数式モードでの Unicode 記号 → LaTeX。末尾の空白は後続文字との連結防止 *)
+$iDocTeXMathSymbolMap = <|
+  "\:2208" -> "\\in ", "\:2209" -> "\\notin ", "\:220b" -> "\\ni ",
+  "\:2261" -> "\\equiv ", "\:2260" -> "\\neq ", "\:2264" -> "\\le ", "\:2265" -> "\\ge ",
+  "\:2266" -> "\\le ", "\:2267" -> "\\ge ", "\:2248" -> "\\approx ", "\:2243" -> "\\simeq ",
+  "\:2245" -> "\\cong ", "\:221d" -> "\\propto ", "\:226a" -> "\\ll ", "\:226b" -> "\\gg ",
+  "\:2192" -> "\\to ", "\:2190" -> "\\leftarrow ", "\:2194" -> "\\leftrightarrow ",
+  "\:21a6" -> "\\mapsto ", "\:21d2" -> "\\Rightarrow ", "\:21d0" -> "\\Leftarrow ",
+  "\:21d4" -> "\\Leftrightarrow ", "\:27fa" -> "\\iff ", "\:27f9" -> "\\Longrightarrow ",
+  "\:2218" -> "\\circ ", "\:00d7" -> "\\times ", "\:00b7" -> "\\cdot ", "\:22c5" -> "\\cdot ",
+  "\:2217" -> "\\ast ", "\:2026" -> "\\ldots ", "\:22ef" -> "\\cdots ", "\:22ee" -> "\\vdots ",
+  "\:2308" -> "\\lceil ", "\:2309" -> "\\rceil ", "\:230a" -> "\\lfloor ", "\:230b" -> "\\rfloor ",
+  "\:2124" -> "\\mathbb{Z}", "\:211d" -> "\\mathbb{R}", "\:2115" -> "\\mathbb{N}",
+  "\:211a" -> "\\mathbb{Q}", "\:2102" -> "\\mathbb{C}",
+  "\:220e" -> "\\blacksquare ", "\:25a0" -> "\\blacksquare ", "\:25a1" -> "\\square ",
+  "\:2220" -> "\\angle ", "\:00b1" -> "\\pm ", "\:2213" -> "\\mp ", "\:00b0" -> "^{\\circ}",
+  "\:2032" -> "'", "\:2033" -> "''", "\:2034" -> "'''", "\:221a" -> "\\sqrt ",
+  "\:221e" -> "\\infty ", "\:2200" -> "\\forall ", "\:2203" -> "\\exists ", "\:2205" -> "\\emptyset ",
+  "\:2282" -> "\\subset ", "\:2286" -> "\\subseteq ", "\:2283" -> "\\supset ", "\:2287" -> "\\supseteq ",
+  "\:222a" -> "\\cup ", "\:2229" -> "\\cap ", "\:2227" -> "\\wedge ", "\:2228" -> "\\vee ",
+  "\:00ac" -> "\\neg ", "\:2211" -> "\\sum ", "\:220f" -> "\\prod ", "\:222b" -> "\\int ",
+  "\:2202" -> "\\partial ", "\:2207" -> "\\nabla ", "\:2225" -> "\\parallel ", "\:22a5" -> "\\perp ",
+  "\:2013" -> "\\text{--}", "\:2014" -> "\\text{---}", "\:2212" -> "-", "\:00a0" -> " ",
+  "\:2018" -> "`", "\:2019" -> "'", "\:201c" -> "``", "\:201d" -> "''",
+  "\:03b1" -> "\\alpha ", "\:03b2" -> "\\beta ", "\:03b3" -> "\\gamma ", "\:03b4" -> "\\delta ",
+  "\:03b5" -> "\\varepsilon ", "\:03f5" -> "\\epsilon ", "\:03b6" -> "\\zeta ", "\:03b7" -> "\\eta ",
+  "\:03b8" -> "\\theta ", "\:03d1" -> "\\vartheta ", "\:03b9" -> "\\iota ", "\:03ba" -> "\\kappa ",
+  "\:03bb" -> "\\lambda ", "\:03bc" -> "\\mu ", "\:03bd" -> "\\nu ", "\:03be" -> "\\xi ",
+  "\:03c0" -> "\\pi ", "\:03c1" -> "\\rho ", "\:03c3" -> "\\sigma ", "\:03c2" -> "\\varsigma ",
+  "\:03c4" -> "\\tau ", "\:03c5" -> "\\upsilon ", "\:03c6" -> "\\varphi ", "\:03d5" -> "\\phi ",
+  "\:03c7" -> "\\chi ", "\:03c8" -> "\\psi ", "\:03c9" -> "\\omega ",
+  "\:0393" -> "\\Gamma ", "\:0394" -> "\\Delta ", "\:0398" -> "\\Theta ", "\:039b" -> "\\Lambda ",
+  "\:039e" -> "\\Xi ", "\:03a0" -> "\\Pi ", "\:03a3" -> "\\sum ", "\:03a6" -> "\\Phi ",
+  "\:03a8" -> "\\Psi ", "\:03a9" -> "\\Omega ", "\:03a5" -> "\\Upsilon "|>;
+
+(* テキストモードでの置換 (数式でない Latin 部分) *)
+$iDocTeXTextSymbolMap = <|
+  "\:00d7" -> "$\\times$", "\:00b0" -> "$^{\\circ}$", "\:00b1" -> "$\\pm$",
+  "\:2026" -> "\\ldots{}", "\:2013" -> "--", "\:2014" -> "---", "\:2212" -> "-",
+  "\:2018" -> "`", "\:2019" -> "'", "\:201c" -> "``", "\:201d" -> "''", "\:00a0" -> "~",
+  "\:00e4" -> "\\\"a", "\:00f6" -> "\\\"o", "\:00fc" -> "\\\"u", "\:00c4" -> "\\\"A",
+  "\:00d6" -> "\\\"O", "\:00dc" -> "\\\"U", "\:00e9" -> "\\'e", "\:00e8" -> "\\`e",
+  "\:00ea" -> "\\^e", "\:00eb" -> "\\\"e", "\:00e1" -> "\\'a", "\:00e0" -> "\\`a",
+  "\:00e2" -> "\\^a", "\:00ed" -> "\\'i", "\:00f3" -> "\\'o", "\:00fa" -> "\\'u",
+  "\:00f1" -> "\\~n", "\:00e7" -> "\\c{c}", "\:00f8" -> "\\o{}", "\:00e5" -> "\\aa{}",
+  "\:00c9" -> "\\'E", "\:00df" -> "\\ss{}", "\:0142" -> "\\l{}", "\:0141" -> "\\L{}",
+  "\:00b7" -> "$\\cdot$", "\:2032" -> "$'$"|>;
+
+(* 数式扱いの引き金となる ASCII 文字 *)
+$iDocTeXMathIndicatorChars = {"_", "^", "=", "<", ">", "+", "{"};
+
+(* CJK 文字判定 (和文・全角記号は LaTeX 上そのまま通す) *)
+iDocTeXCJKCodeQ[c_Integer] :=
+  (12288 <= c <= 12351) || (12352 <= c <= 12543) || (12784 <= c <= 12799) ||
+  (12800 <= c <= 13311) || (13312 <= c <= 19903) || (19968 <= c <= 40959) ||
+  (63744 <= c <= 64255) || (65280 <= c <= 65519) || (11904 <= c <= 12245) ||
+  (131072 <= c <= 195103);
+
+(* \cite / \label / \ref のキーを ASCII のみに正規化 (CJKutf8 のアクティブ文字や空白対策) *)
+iDocLaTeXSafeKey[key_String] :=
+  Module[{s = StringTrim[key]},
+    s = StringReplace[s, RegularExpression["\\s+"] -> "-"];
+    s = StringJoin[Map[
+      Function[ch,
+        Module[{c = First[ToCharacterCode[ch]]},
+          If[(48 <= c <= 57) || (65 <= c <= 90) || (97 <= c <= 122) || MemberQ[{45, 46, 58}, c],
+            ch,
+            If[c < 128, "-", "u" <> IntegerString[c, 16]]]]],
+      Characters[s]]];
+    s = StringReplace[s, RegularExpression["-{2,}"] -> "-"];
+    s = StringTrim[s, "-"];
+    If[s === "", "key", s]];
+
+(* 1 文字が数式的かどうか (Unicode 側) *)
+iDocTeXMathCharQ[ch_String] :=
+  KeyExistsQ[$iDocTeXSubscriptMap, ch] || KeyExistsQ[$iDocTeXSuperscriptMap, ch] ||
+  (KeyExistsQ[$iDocTeXMathSymbolMap, ch] &&
+    !MemberQ[{"\:2026", "\:2013", "\:2014", "\:2018", "\:2019", "\:201c", "\:201d", "\:00a0", "\:2212"}, ch]);
+
+(* Latin 部分が数式かどうかの判定 *)
+iDocTeXMathRunQ[run_String] :=
+  Module[{s = StringTrim[run]},
+    If[s === "", Return[False]];
+    (* 1 文字の英字 (変数) は数式扱い *)
+    If[StringMatchQ[s, RegularExpression["[A-Za-z]"]], Return[True]];
+    If[AnyTrue[Characters[s], iDocTeXMathCharQ], Return[True]];
+    If[AnyTrue[$iDocTeXMathIndicatorChars, StringContainsQ[s, #] &], Return[True]];
+    False];
+
+(* 数式モード文字列内の Unicode 記号のみを LaTeX に変換 (既存 $...$ の中身などに使う) *)
+iDocTeXConvertMathUnicode[s_String] :=
+  Module[{chars = Characters[s], out = {}, i = 1, n, buf, ch},
+    n = Length[chars];
+    While[i <= n,
+      ch = chars[[i]];
+      Which[
+        KeyExistsQ[$iDocTeXSubscriptMap, ch],
+          buf = {};
+          While[i <= n && KeyExistsQ[$iDocTeXSubscriptMap, chars[[i]]],
+            AppendTo[buf, $iDocTeXSubscriptMap[chars[[i]]]]; i++];
+          AppendTo[out, "_{" <> StringJoin[buf] <> "}"],
+        KeyExistsQ[$iDocTeXSuperscriptMap, ch],
+          buf = {};
+          While[i <= n && KeyExistsQ[$iDocTeXSuperscriptMap, chars[[i]]],
+            AppendTo[buf, $iDocTeXSuperscriptMap[chars[[i]]]]; i++];
+          AppendTo[out, "^{" <> StringJoin[buf] <> "}"],
+        KeyExistsQ[$iDocTeXMathSymbolMap, ch],
+          AppendTo[out, $iDocTeXMathSymbolMap[ch]]; i++,
+        True,
+          AppendTo[out, ch]; i++]];
+    StringJoin[out]];
+
+(* 数式と判定した Latin 部分を LaTeX 数式へ変換して $...$ で囲む *)
+$iDocTeXMathFunctionNames = {"cos", "sin", "tan", "cot", "sec", "csc", "exp", "log", "ln",
+  "max", "min", "sup", "inf", "lim", "det", "dim", "gcd", "arg", "sinh", "cosh", "tanh"};
+
+iDocTeXMathRun[run_String] :=
+  Module[{chars = Characters[run], out = {}, i = 1, n, ch, buf, word, prev, braceStack = {},
+          lastNonSpace = ""},
+    n = Length[chars];
+    While[i <= n,
+      ch = chars[[i]];
+      Which[
+        (* _ / ^ の直後の 1 文字は単独の添字にする (C_cN_c → C_c N_c) *)
+        (ch === "_" || ch === "^") && i < n &&
+          StringMatchQ[chars[[i + 1]], RegularExpression["[A-Za-z0-9]"]],
+          AppendTo[out, ch <> chars[[i + 1]]];
+          lastNonSpace = chars[[i + 1]]; i += 2,
+        (* ASCII 英字で始まる識別子 (英字+数字: SR8, PCA など) *)
+        StringMatchQ[ch, RegularExpression["[A-Za-z]"]],
+          buf = {};
+          While[i <= n && StringMatchQ[chars[[i]], RegularExpression["[A-Za-z0-9]"]],
+            AppendTo[buf, chars[[i]]]; i++];
+          word = StringJoin[buf];
+          AppendTo[out,
+            Which[
+              StringLength[word] == 1,
+                Which[
+                  word === "Z", "\\mathbb{Z}",
+                  word === "R" && i <= n && (chars[[i]] === "\:00b2" || chars[[i]] === "\:1d48"), "\\mathbb{R}",
+                  True, word],
+              word === "mod", "\\bmod ",
+              MemberQ[$iDocTeXMathFunctionNames, word], "\\" <> word <> " ",
+              True, "\\mathrm{" <> word <> "}"]];
+          lastNonSpace = word,
+        (* 下付き Unicode 列 *)
+        KeyExistsQ[$iDocTeXSubscriptMap, ch],
+          buf = {};
+          While[i <= n && KeyExistsQ[$iDocTeXSubscriptMap, chars[[i]]],
+            AppendTo[buf, $iDocTeXSubscriptMap[chars[[i]]]]; i++];
+          AppendTo[out, "_{" <> StringJoin[buf] <> "}"]; lastNonSpace = "}",
+        (* 上付き Unicode 列 *)
+        KeyExistsQ[$iDocTeXSuperscriptMap, ch],
+          buf = {};
+          While[i <= n && KeyExistsQ[$iDocTeXSuperscriptMap, chars[[i]]],
+            AppendTo[buf, $iDocTeXSuperscriptMap[chars[[i]]]]; i++];
+          AppendTo[out, "^{" <> StringJoin[buf] <> "}"]; lastNonSpace = "}",
+        (* 集合の中括弧 vs 添字のグループ化中括弧 *)
+        ch === "{",
+          If[lastNonSpace === "_" || lastNonSpace === "^",
+            AppendTo[out, "{"]; AppendTo[braceStack, "group"],
+            AppendTo[out, "\\{"]; AppendTo[braceStack, "set"]];
+          lastNonSpace = "{"; i++,
+        ch === "}",
+          If[Length[braceStack] > 0 && Last[braceStack] === "group",
+            AppendTo[out, "}"],
+            AppendTo[out, "\\}"]];
+          If[Length[braceStack] > 0, braceStack = Most[braceStack]];
+          lastNonSpace = "}"; i++,
+        ch === "#", AppendTo[out, "\\#"]; lastNonSpace = ch; i++,
+        ch === "%", AppendTo[out, "\\%"]; lastNonSpace = ch; i++,
+        ch === "&", AppendTo[out, "\\&"]; lastNonSpace = ch; i++,
+        ch === "$", AppendTo[out, "\\$"]; lastNonSpace = ch; i++,
+        ch === "~", AppendTo[out, "\\sim "]; lastNonSpace = ch; i++,
+        ch === "\\", AppendTo[out, "\\backslash "]; lastNonSpace = ch; i++,
+        KeyExistsQ[$iDocTeXMathSymbolMap, ch],
+          AppendTo[out, $iDocTeXMathSymbolMap[ch]]; lastNonSpace = ch; i++,
+        True,
+          AppendTo[out, ch];
+          If[!StringMatchQ[ch, RegularExpression["\\s"]], lastNonSpace = ch];
+          i++]];
+    (* 未対応の中括弧を閉じる (安全策) *)
+    Do[AppendTo[out, If[b === "group", "}", "\\}"]], {b, Reverse[braceStack]}];
+    "$" <> StringJoin[out] <> "$"];
+
+(* 数式でない Latin 部分のエスケープ *)
+iDocTeXTextRun[run_String] :=
+  StringJoin[Map[
+    Function[ch,
+      Which[
+        ch === "#", "\\#", ch === "%", "\\%", ch === "&", "\\&", ch === "_", "\\_",
+        ch === "$", "\\$", ch === "{", "\\{", ch === "}", "\\}",
+        ch === "^", "\\^{}", ch === "~", "\\textasciitilde{}",
+        ch === "\\", "\\textbackslash{}",
+        ch === "<", "$<$", ch === ">", "$>$", ch === "|", "$|$",
+        KeyExistsQ[$iDocTeXTextSymbolMap, ch], $iDocTeXTextSymbolMap[ch],
+        iDocTeXMathCharQ[ch], "$" <> StringTrim[iDocTeXConvertMathUnicode[ch]] <> "$",
+        True, ch]],
+    Characters[run]]];
+
+(* 保護トークンを含まない自由テキストの変換 *)
+iDocTeXFreeText[text_String] :=
+  Module[{chars = Characters[text], out = {}, i = 1, n, buf, isCJK, isCJKAt, run, lead, core, trail},
+    n = Length[chars];
+    isCJK[ch_] := iDocTeXCJKCodeQ[First[ToCharacterCode[ch]]];
+    (* 和文括弧の代わりに使われた半角括弧 ( 直後が和文 / ) 直前が和文 ) は和文側に含める *)
+    isCJKAt[k_] := isCJK[chars[[k]]] ||
+      (chars[[k]] === "(" && k < n && isCJK[chars[[k + 1]]]) ||
+      (chars[[k]] === ")" && k > 1 && isCJK[chars[[k - 1]]]);
+    While[i <= n,
+      If[isCJKAt[i],
+        buf = {};
+        While[i <= n && isCJKAt[i], AppendTo[buf, chars[[i]]]; i++];
+        AppendTo[out, StringJoin[buf]],
+        buf = {};
+        While[i <= n && !isCJKAt[i], AppendTo[buf, chars[[i]]]; i++];
+        run = StringJoin[buf];
+        lead = StringCases[run, RegularExpression["^\\s*"]];
+        trail = StringCases[run, RegularExpression["\\s*$"]];
+        lead = If[lead === {}, "", First[lead]];
+        trail = If[trail === {}, "", First[trail]];
+        core = StringTrim[run];
+        If[core === "",
+          AppendTo[out, run],
+          If[iDocTeXMathRunQ[core],
+            (* 和文括弧の一部と思われる不釣り合いな ( ) は数式の外に出す *)
+            Module[{pre = "", post = "", nOpen, nClose},
+              nOpen = StringCount[core, "("]; nClose = StringCount[core, ")"];
+              While[StringStartsQ[core, "("] && nOpen > nClose,
+                pre = pre <> "("; core = StringDrop[core, 1]; nOpen--];
+              While[StringEndsQ[core, ")"] && nClose > nOpen,
+                post = ")" <> post; core = StringDrop[core, -1]; nClose--];
+              core = StringTrim[core];
+              AppendTo[out, lead <> pre <>
+                If[core === "", "", If[iDocTeXMathRunQ[core], iDocTeXMathRun[core], iDocTeXTextRun[core]]] <>
+                post <> trail]],
+            AppendTo[out, lead <> iDocTeXTextRun[core] <> trail]]]]];
+    StringJoin[out]];
+
+(* 段落 1 つ分のテキストを LaTeX 安全にする。
+   \cite{} \ref{} \label{} \figurename~\ref{} と既存の $...$ / \(...\) は保護し、
+   \cite / \ref / \label のキーは iDocLaTeXSafeKey で正規化する。 *)
+iDocLaTeXSanitizeText[text_String] :=
+  Module[{pattern, pieces, protectedRule},
+    (* 保護対象: \figurename~\ref{}, \cite{} 等, $...$, \(...\),
+       その他の LaTeX コマンド語 (LLM 数式整形の出力に含まれうる), \% \_ 等のエスケープ済み特殊文字 *)
+    pattern = RegularExpression[
+      "\\\\figurename~\\\\ref\\{[^}]*\\}|\\\\(?:cite|ref|label|eqref|pageref)\\{[^}]*\\}|" <>
+      "\\$[^$]*\\$|\\\\\\(.*?\\\\\\)|\\\\[A-Za-z]+\\*?(?:\\{[^{}]*\\})?|\\\\[%_#&{}$~^\\\\]"];
+    pieces = StringSplit[text, p : pattern :> {"PROTECTED", p}];
+    protectedRule[{"PROTECTED", p_}] :=
+      Which[
+        StringStartsQ[p, "\\figurename~\\ref{"],
+          "\\figurename~\\ref{" <> iDocLaTeXSafeKey[StringTake[p, {18, -2}]] <> "}",
+        StringMatchQ[p, RegularExpression["\\\\(cite|ref|label|eqref|pageref)\\{.*\\}"]],
+          Module[{cmd, keys},
+            cmd = First[StringCases[p, RegularExpression["^\\\\[a-z]+"]]];
+            keys = StringSplit[StringTake[p, {StringLength[cmd] + 2, -2}], ","];
+            (* \cite{key} の key を正規化。fig: 接頭辞は残す *)
+            keys = Map[
+              Function[k,
+                If[StringStartsQ[StringTrim[k], "fig:"],
+                  "fig:" <> iDocLaTeXSafeKey[StringDrop[StringTrim[k], 4]],
+                  iDocLaTeXSafeKey[k]]],
+              keys];
+            cmd <> "{" <> StringRiffle[keys, ","] <> "}"],
+        StringStartsQ[p, "$"],
+          "$" <> iDocTeXConvertMathUnicode[StringTake[p, {2, -2}]] <> "$",
+        StringStartsQ[p, "\\("],
+          "\\(" <> iDocTeXConvertMathUnicode[StringTake[p, {3, -3}]] <> "\\)",
+        True, p];
+    StringJoin[Map[
+      If[ListQ[#], protectedRule[#], iDocTeXFreeText[#]] &,
+      pieces]]];
+
+(* セル 1 個分のエクスポート文字列 (複数行の可能性あり) を LaTeX 安全にする。
+   lstlisting / verbatim / \[ \] / figure 環境の中身は本文として扱わない。 *)
+iDocLaTeXSanitizeChunk[chunk_String] :=
+  Module[{lines = StringSplit[chunk, "\n", All], out = {}, mode = "text", l},
+    Do[
+      l = lines[[k]];
+      Which[
+        mode === "verbatim",
+          AppendTo[out, l];
+          If[StringStartsQ[l, "\\end{lstlisting}"] || StringStartsQ[l, "\\end{verbatim}"],
+            mode = "text"],
+        mode === "display",
+          If[StringTrim[l] === "\\]", AppendTo[out, l]; mode = "text",
+            AppendTo[out, iDocTeXConvertMathUnicode[l]]],
+        mode === "figure",
+          Which[
+            StringStartsQ[l, "\\caption{"] && StringEndsQ[l, "}"],
+              AppendTo[out, "\\caption{" <>
+                iDocLaTeXSanitizeText[StringTake[l, {10, -2}]] <> "}"],
+            StringStartsQ[l, "\\label{fig:"] && StringEndsQ[l, "}"],
+              AppendTo[out, "\\label{fig:" <>
+                iDocLaTeXSafeKey[StringTake[l, {12, -2}]] <> "}"],
+            True, AppendTo[out, l]];
+          If[StringStartsQ[l, "\\end{figure}"], mode = "text"],
+        StringStartsQ[l, "\\begin{lstlisting}"] || StringStartsQ[l, "\\begin{verbatim}"],
+          AppendTo[out, l]; mode = "verbatim",
+        StringTrim[l] === "\\[",
+          AppendTo[out, l]; mode = "display",
+        StringStartsQ[l, "\\begin{figure}"],
+          AppendTo[out, l]; mode = "figure",
+        StringMatchQ[l, RegularExpression[
+            "^\\\\(section|subsection|subsubsection|paragraph|title|subtitle|chapter)\\*?\\{.*\\}$"]],
+          Module[{cmd = First[StringCases[l, RegularExpression["^\\\\[a-z]+\\*?\\{"]]]},
+            AppendTo[out, cmd <>
+              iDocLaTeXSanitizeText[StringTake[l, {StringLength[cmd] + 1, -2}]] <> "}"]],
+        StringMatchQ[l, RegularExpression["^%%[A-Z]+%%\\s*\\\\item .*"]],
+          Module[{pre = First[StringCases[l, RegularExpression["^%%[A-Z]+%%\\s*\\\\item "]]]},
+            AppendTo[out, pre <> iDocLaTeXSanitizeText[StringDrop[l, StringLength[pre]]]]],
+        True,
+          AppendTo[out, iDocLaTeXSanitizeText[l]]],
+      {k, Length[lines]}];
+    StringRiffle[out, "\n"]];
+
+(* figure 環境 (図が参照位置付近に置かれるよう [!htbp] と高さ制限)。
+   fullPage -> True (TaggingRules documentation/figFullPage) のときは独立ページ [p] に
+   ほぼページ全体の高さで置く (付録の一覧図など)。 *)
+iDocLaTeXFigureEnv[relPath_String, caption_String, label_String, fullPage_:False] :=
+  If[TrueQ[fullPage],
+    "\\begin{figure}[p]\n" <>
+    "\\centering\n" <>
+    "\\includegraphics[width=\\textwidth,height=0.9\\textheight,keepaspectratio]{" <>
+      relPath <> "}\n",
+    "\\begin{figure}[!htbp]\n" <>
+    "\\centering\n" <>
+    "\\includegraphics[width=\\textwidth,height=0.42\\textheight,keepaspectratio]{" <>
+      relPath <> "}\n"] <>
+  "\\caption{" <> caption <> "}\n" <>
+  "\\label{fig:" <> label <> "}\n" <>
+  "\\end{figure}";
 
 (* ============================================================
    LaTeX 数式自動フォーマット (LLM ベース)
@@ -5679,6 +6082,9 @@ DocExportLaTeX[nb_NotebookObject, opts:OptionsPattern[]] :=
           line = iDocLaTeXifyMath[line,
             iDocExtractCellPDFContext[nb, i]];
           mathCount++];
+        (* 決定的サニタイズ: Unicode 数式記号の変換・特殊文字のエスケープ・
+           キーの正規化 (LLM 変換の有無によらず常に適用) *)
+        line = iDocLaTeXSanitizeChunk[line];
         AppendTo[lines, line]],
     {i, nCells}];
 
@@ -5700,27 +6106,48 @@ DocExportLaTeX[nb_NotebookObject, opts:OptionsPattern[]] :=
         bibLines = {"\\begin{thebibliography}{99}"};
         Do[
           AppendTo[bibLines,
-            "\\bibitem{" <> key <> "} " <>
-            mergedBib[key]["Author"] <> " (" <> mergedBib[key]["Year"] <> "). " <>
-            mergedBib[key]["Title"] <> "."],
+            "\\bibitem{" <> iDocLaTeXSafeKey[key] <> "} " <>
+            iDocLaTeXSanitizeText[mergedBib[key]["Author"]] <> " (" <>
+            iDocLaTeXSanitizeText[mergedBib[key]["Year"]] <> "). " <>
+            iDocLaTeXSanitizeText[mergedBib[key]["Title"]] <> "."],
         {key, Keys[mergedBib]}];
         AppendTo[bibLines, "\\end{thebibliography}"];
         AppendTo[lines, StringRiffle[bibLines, "\n"]]]];
 
-    (* LaTeX ヘッダー・フッター *)
-    header = "\\documentclass[a4paper,11pt]{article}\n" <>
-      "\\usepackage[utf8]{inputenc}\n" <>
+    (* LaTeX ヘッダー・フッター
+       エンジン自動判別: pLaTeX/upLaTeX (Overleaf の和文設定, platex+dvipdfmx) なら
+       jsarticle、それ以外 (pdfLaTeX) なら article + CJKutf8。
+       図は [!htbp] + 高さ制限で参照位置付近に置き、float パラメータも緩める。 *)
+    header = "\\RequirePackage{iftex}\n" <>
+      "\\ifptex\n" <>
+      "  \\documentclass[a4paper,11pt,dvipdfmx,autodetect-engine]{jsarticle}\n" <>
+      "  \\usepackage{graphicx}\n" <>
+      "  \\usepackage{hyperref}\n" <>
+      "  \\usepackage{pxjahyper}\n" <>
+      "\\else\n" <>
+      "  \\documentclass[a4paper,11pt]{article}\n" <>
+      "  \\usepackage[utf8]{inputenc}\n" <>
+      "  \\usepackage[T1]{fontenc}\n" <>
+      "  \\usepackage{CJKutf8}\n" <>
+      "  \\usepackage{graphicx}\n" <>
+      "  \\usepackage{hyperref}\n" <>
+      "  \\usepackage[margin=2.5cm]{geometry}\n" <>
+      "\\fi\n" <>
       "\\usepackage{amsmath,amssymb,amsfonts}\n" <>
-      "\\usepackage{graphicx}\n" <>
-      "\\usepackage{hyperref}\n" <>
       "\\usepackage{listings}\n" <>
-      "\\usepackage[margin=2.5cm]{geometry}\n" <>
-      "\\usepackage{CJKutf8}\n" <>
+      "\\usepackage[section]{placeins}\n" <>
       "\\lstset{basicstyle=\\ttfamily\\small,breaklines=true,frame=single,\n" <>
       "  columns=fullflexible,keepspaces=true}\n" <>
+      "\\renewcommand{\\topfraction}{0.9}\n" <>
+      "\\renewcommand{\\bottomfraction}{0.8}\n" <>
+      "\\renewcommand{\\textfraction}{0.05}\n" <>
+      "\\renewcommand{\\floatpagefraction}{0.75}\n" <>
+      "\\setcounter{topnumber}{3}\n" <>
+      "\\setcounter{bottomnumber}{2}\n" <>
+      "\\setcounter{totalnumber}{5}\n" <>
       "\n\\begin{document}\n" <>
-      "\\begin{CJK}{UTF8}{min}\n";
-    footer = "\n\\end{CJK}\n\\end{document}\n";
+      "\\ifptex\\else\\begin{CJK}{UTF8}{min}\\fi\n";
+    footer = "\n\\ifptex\\else\\end{CJK}\\fi\n\\end{document}\n";
 
     (* ファイル出力 *)
     outFile = FileNameJoin[{outDir, baseName <> ".tex"}];

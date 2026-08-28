@@ -184,8 +184,13 @@ LLM は生成コードを 1 つのコードブロックにまとめて出力し�
 
 ## エクスポート時の図サイズについて
 
-Markdown エクスポート（`DocExportMarkdown`）では、図は `{#fig-label width=100%}` 形式で出力され、表示幅いっぱいに展開されます。  
-LaTeX エクスポート（`DocExportLaTeX`）では、図は `\includegraphics[width=\textwidth]{...}` で出力されます。
+Markdown エクスポート（`DocExportMarkdown`）では、図は `{#fig-label width=100%}` 形式で出力され、表示幅いっぱいに展開されます。
+
+LaTeX エクスポート（`DocExportLaTeX`）では、図は `[!htbp]` 配置指定と高さ制限付きで、`\includegraphics[width=\textwidth]{...}` を用いて本文中の参照位置付近に出力されます。付録の図一覧のように図をページ全体の高さで独立ページに配置したい場合は、対象の画像セルの `TaggingRules` に `documentation/figFullPage -> True` を設定してください。`[p]` 配置指定の全ページ図として出力されます。
+
+LaTeX プリアンブルは、pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overleaf の和文設定）と pdfLaTeX（`CJKutf8`）のどちらでコンパイルしても正しく組版できるよう、`iftex` パッケージで自動的に切り替わります。生成される `.tex` ファイルはどちらの TeX 処理系でもそのまま使用できます。
+
+本文中の Unicode 数学記号（ギリシャ文字・上付き/下付き文字・∈ × ⌈ 等）や `_ ^ # % &` などの LaTeX 特殊文字は、LLM を使わない決定的な変換で自動的に LaTeX 記法へエスケープされます（`\cite{}` `\ref{}` のキーも ASCII に正規化されます）。`DocExportLaTeX` に `"MathFormat" -> True` を指定すると、この決定的な変換に加えて LLM による数式の自動整形を追加で行います（デフォルト: `False`）。
 
 ---
 
@@ -199,6 +204,7 @@ LaTeX エクスポート（`DocExportLaTeX`）では、図は `\includegraphics[
 | 文字化けが発生する | `Block[{$CharacterEncoding = "UTF-8"}, ...]` でロードしているか確認する |
 | `DocExportWord` が失敗する | Pandoc がインストールされているか確認する（`pandoc --version`） |
 | 計算モードのセルに再度「計算」を適用できない | パレットの「×計算」でプロンプト状態に戻してから再実行する |
+| LaTeX エクスポートした図がページ全体に落ちて印刷で読めない | 図セルの `TaggingRules` に `documentation/figFullPage -> True` を設定し、独立ページの全ページ図として出力する |
 
 ---
 
