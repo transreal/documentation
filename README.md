@@ -1,6 +1,6 @@
-# documentation
+# documentation — 設計思想と実装の概要
 
-Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。翻訳辞書・LLM 指示・文献管理・図の引用、Markdown・LaTeX・MS-Word へのエクスポート（試験的）など、執筆から出版まで一貫したワークフローを提供します。
+Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。翻訳辞書・LLM 指示・文献管理・図の引用、Markdown・LaTeX・MS-Word へのエクスポート（試験的）、そして論文 PDF からノートブックへの逆変換（サブモジュール）など、執筆から出版まで一貫したワークフローを提供します。
 
 ## 設計思想と実装の概要
 
@@ -47,11 +47,11 @@ Directive や Dictionary の内容をノートブック全体に反映したい�
 - **手書き図の清書**: Mathematica の描画ツールで描いたラフな図を、配置・矢印・ラベルを保ったまま、きれいなベクター図（`Graphics`）に再構成します。元のベクターデータ（テキスト挿入の文字列・座標、ストロークの範囲）も参照して精度を高めます。
 - **テキスト → 概念図**: アイデアや説明を書いたテキストセルから、その内容を表すブロック図（ノード・矢印・ラベル）を生成します。
 - **修正＝再清書 / 更新＝高品質化**: 清書図に手書きで描き足して **修正** を押すと追記を取り込んで再清書、**更新** を押すと影・角丸・配色テーマ（または画像生成 AI）で高品質化します。
-- 結果は緑枠の清書モードで表示され、**↔ 切替** で元の手書き／テキストと行き来でき、**×清書** で元に戻せます。図中の日本語は `ClaudeCode`$ClaudeStandardFont`（既定 "Yu Gothic UI"）で描画されます。
+- 結果は緑枠の清書モードで表示され、**↔ 切替** で元の手書き／テキストと行き来でき、**×清書** で元に戻せます。図中の日本語は `ClaudeCode``$ClaudeStandardFont`（既定 "Yu Gothic UI"）で描画されます。
 
 パラグラフ・翻訳テキストに対する **修正** / **更新** の動作は前述の「テキストの校正・完成度向上」を参照してください。
 
-詳細・設定変数は [`user_manual.md`](user_manual.md)（「清書（図）」「ワークフロー 5d」「図機能の設定変数」）を参照してください。
+詳細・設定変数は [`user_manual.md`](documentation_info/docs/user_manual.md)（「清書（図）」「ワークフロー 5d」「図機能の設定変数」）を参照してください。
 
 #### 図の引用と参考文献リストの自動生成
 
@@ -64,6 +64,10 @@ Directive や Dictionary の内容をノートブック全体に反映したい�
 #### 執筆指示と用語辞書のノートブック内管理
 
 **Directive セル**にはノートブック全体の LLM 指示（文体・表記ルール等）を記載でき、すべての展開・翻訳・同期・計算・修正・更新操作に自動適用されます。**Dictionary セル**は翻訳時の用語対応を管理し、技術用語や固有名詞を一貫した訳語に統一します。これらのメタセルはエクスポート対象外であり、最終出力には含まれません。
+
+#### 論文 PDF のノートブック変換（逆変換）*(サブモジュール)*
+
+`documentation_paper2nb` サブモジュールを `$packageDirectory` に配置すると（`documentation.wl` 末尾で自動ロード）、順変換（ノートブック → Markdown/LaTeX/Word）とは逆方向に、**論文 PDF をドキュメント規約のノートブックへ変換**できます。第一部で見出し階層・段落（翻訳と原文を保持、`DocToggleView` で切替可能）・インライン数式・別行立て数式（LaTeX→box 変換に失敗した場合はページ画像を切り出し）・図表とキャプション・参考文献を復元し、第二部で論文中の計算・アルゴリズムを実行可能な Wolfram Language 定義として再構成します（生成コードは自動評価されません）。`DocImportPaper[pdfPath]` で実行するほか、パレットの「← 論文PDF」ボタンからも呼び出せます。個別ページの構造解析（`DocPaperAnalyzePage`）や計算抽出のみの実行（`DocPaperExtractComputations`）も単独で呼び出せます。直近の処理の中間結果は `$DocPaperLastAnalysis` に保持されます。非公開原稿はローカル LLM プロバイダの使用を推奨します（生成ノートブックの CloudPublishable 宣言は既定では付与されません）。詳細は [`api_paper2nb.md`](documentation_info/docs/api_paper2nb.md) を参照してください。
 
 ### セル状態管理: TaggingRules による非破壊的なデータ保持
 
@@ -88,7 +92,8 @@ LLM の呼び出しはすべて非同期で実行され、カーネルをブロ�
 | Mathematica | 13.0 以上 |
 | OS | Windows 11（64-bit） |
 | 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess), [claudecode](https://github.com/transreal/claudecode) |
-| 外部サービス | Anthropic Claude API（LLM 機能・図の清書／概念図生成に必要）／LMStudio（ローカルモデル使用時・オプション）／OpenAI API（図の更新を画像生成 AI で行う場合・オプション） |
+| 依存パッケージ（任意） | [documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)（論文 PDF 逆変換機能 `DocImportPaper` を使う場合のみ） |
+| 外部サービス | Anthropic Claude API（LLM 機能・図の清書／概念図生成・論文 PDF 逆変換に必要）／LMStudio（ローカルモデル使用時・オプション）／OpenAI API（図の更新を画像生成 AI で行う場合・オプション） |
 | Pandoc | 2.0 以上（MS-Word 形式でのエクスポートに必要） |
 
 ### インストール
@@ -103,6 +108,10 @@ LLM の呼び出しはすべて非同期で実行され、カーネルをブロ�
 #### 2. パッケージファイルの配置
 
 [https://github.com/transreal/documentation](https://github.com/transreal/documentation) から `documentation.wl` を取得し、`$packageDirectory` に配置します。
+
+##### 論文 PDF 逆変換サブモジュール（任意）
+
+論文 PDF をノートブックに逆変換する機能（`DocImportPaper` 等）を使う場合は、[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb) から `documentation_paper2nb.wl` を取得し、`documentation.wl` と同じ `$packageDirectory` に配置してください。`documentation.wl` はロード時に `$packageDirectory` 内の `documentation_paper2nb.wl` を自動検出して読み込みます。配置しない場合はエラーにはならず、当該機能のみが無効化されます。
 
 #### 3. `$Path` の設定
 
@@ -128,7 +137,7 @@ Block[{$CharacterEncoding = "UTF-8"},
 ]
 ```
 
-依存パッケージ（`NBAccess`・`ClaudeCode`）は `documentation.wl` 内で自動的に `Needs` されます。パッケージのロードと同時にパレットが自動表示されます。
+依存パッケージ（`NBAccess`・`ClaudeCode`）は `documentation.wl` 内で自動的に `Needs` されます。`documentation_paper2nb.wl` が `$packageDirectory` に存在する場合は続けて自動ロードされます。パッケージのロードと同時にパレットが自動表示されます。
 
 ### LMStudio ローカルモデルの使用（オプション）
 
@@ -213,6 +222,7 @@ ShowDocPalette[]
 | **×清書** | 清書・生成した図を破棄して元の手書き図／テキストに戻す |
 | **セル分割** | カーソル位置でセルを前半・後半に分割 |
 | **セル合併** | 複数選択セルを 1 つに統合 |
+| **論文インポート（逆変換）** *(サブモジュール)* | PDF 形式の論文を解析し、本文・数式・図表・参考文献・計算過程をノートブックのセルとして再構成。個別ページ解析（`DocPaperAnalyzePage`）・計算抽出のみ（`DocPaperExtractComputations`）も単独実行可能（`documentation_paper2nb` 導入時のみ） |
 | **LMStudio 連携** | `$ClaudeModel` をリストに設定することで LMStudio のローカル LLM に切り替え可能 |
 
 #### セル種別
@@ -245,6 +255,10 @@ ShowDocPalette[]
 
 エクスポートのセル除外設定: パレットの「除外切替」ボタンで任意のセルをエクスポート対象外に設定・解除できます。Note・Directive・Dictionary・Bibliography セルは常にエクスポート対象外です。
 
+#### 論文インポート（逆変換）*(サブモジュール)*
+
+`documentation_paper2nb` サブモジュール（`documentation_paper2nb.wl`）を導入すると、Markdown/LaTeX/Word エクスポートの逆方向に、論文 PDF をドキュメント規約のノートブックへ変換できます。`DocImportPaper[pdfPath]` またはパレットの「← 論文PDF」ボタンから実行します。個別ページの構造解析は `DocPaperAnalyzePage`、計算抽出のみの実行は `DocPaperExtractComputations` で単独呼び出しできます。直近の処理の中間結果（ブロック・セル構造など）は `$DocPaperLastAnalysis` に保持されます。詳細は [`api_paper2nb.md`](documentation_info/docs/api_paper2nb.md) を参照してください。
+
 #### 関数一覧
 
 | 関数 | 説明 |
@@ -269,6 +283,11 @@ ShowDocPalette[]
 | `DocExportMarkdown[nb, opts]` | Markdown エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
 | `DocExportLaTeX[nb, opts]` | LaTeX エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
 | `DocExportWord[nb, opts]` | MS-Word エクスポート（Pandoc 必要、`"ReferenceDoc" -> パス` でテンプレート指定） |
+| `DocImportPaper[pdfPath, opts]` | 論文 PDF をドキュメント規約のノートブックへ逆変換（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
+| `DocPaperAnalyzePage[pdfPath, page, opts]` | 論文 PDF の指定ページを構造解析し、要素ブロックのリストを返す（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
+| `DocPaperExtractComputations[pdfPath, opts]` | 論文全文から再現可能な計算・アルゴリズムを抽出して Wolfram Language コードを生成（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
+| `DocPaperTeXToBoxes[latex]` | LaTeX 数式文字列を TraditionalForm ボックスに変換するユーティリティ（`documentation_paper2nb` 導入時のみ） |
+| `DocPaperTextToTextData[str]` | `$...$` や `\(...\)` を含む文字列をインライン数式セル埋め込みの TextData に変換するユーティリティ（`documentation_paper2nb` 導入時のみ） |
 | `ShowDocPalette[]` | パレットを表示 |
 
 #### パレットボタン一覧
@@ -299,6 +318,7 @@ ShowDocPalette[]
 | … 全プロンプト | ノートブック全体をアイデア表示に一括切替 |
 | ¶ 全パラグラフ | ノートブック全体をパラグラフ表示に一括切替 |
 | Â 全翻訳 | ノートブック全体を翻訳表示に一括切替 |
+| ← 論文PDF | ファイル選択ダイアログで論文 PDF を選択し、ノートブックへ逆変換（`documentation_paper2nb` 導入時のみ。処理には数分かかりカーネルを占有） |
 | → Markdown | ノートブックを Markdown 形式でエクスポート（試験的） |
 | → LaTeX | ノートブックを LaTeX 形式でエクスポート（試験的） |
 | → Word | ノートブックを MS-Word 形式でエクスポート（試験的・Pandoc 必要） |
@@ -312,9 +332,10 @@ ShowDocPalette[]
 | ファイル | 内容 |
 |----------|------|
 | `api.md` | 全公開関数・変数のリファレンス、セルモードと TaggingRules 構造、エクスポートセルスタイルマッピングの詳細 |
+| `api_paper2nb.md` | 論文 PDF → ノートブック逆変換のリファレンス（`DocImportPaper`, `DocPaperAnalyzePage`, `DocPaperExtractComputations`, `DocPaperTeXToBoxes`, `DocPaperTextToTextData`。`documentation_paper2nb` 導入時のみ有効） |
 | `user_manual.md` | ユーザーマニュアル、パレット操作ガイド、各関数の引数説明、LMStudio ローカルモデル設定手順、典型的なワークフロー |
 | `examples/example.md` | コード例集（パレット起動、展開、切替、翻訳設定、計算モード、複数セル操作、同期） |
-| `setup.md` | インストール手順、動作要件、Pandoc のインストール方法、トラブルシューティング |
+| `setup.md` | インストール手順、動作要件、Pandoc のインストール方法、論文 PDF 逆変換サブモジュールの配置、トラブルシューティング |
 
 ---
 
@@ -513,6 +534,31 @@ DocExportWord[EvaluationNotebook[], "ReferenceDoc" -> "template.docx"]
 ### 任意セルをエクスポート対象外に設定する
 
 セルを選択してパレットの「除外切替」ボタンを押すと、そのセルがエクスポートから除外されます。もう一度押すと解除されます。
+
+### 論文 PDF をノートブックへ逆変換する（documentation_paper2nb 導入時）
+
+```mathematica
+DocImportPaper["C:/papers/original.pdf"]
+```
+
+見出し・段落（翻訳＋原文保持）・数式・図表・参考文献を復元したノートブックが生成されます（第一部）。続けて、論文中の計算・アルゴリズムが実行可能な Wolfram Language コード（未評価の Input セル + 実行例）として再構成されます（第二部）。生成コードはパッケージ側では自動評価されません。非公開原稿を扱う場合はローカル LLM プロバイダの使用を推奨します。
+
+```mathematica
+(* ページ範囲を指定し、第二部（計算再構成）を省略する例 *)
+DocImportPaper["C:/papers/original.pdf", "Pages" -> 1 ;; 3, "Reconstruct" -> False]
+```
+
+### 個別ページを構造解析する（診断・部分再利用）
+
+```mathematica
+(* PDF の 1 ページを構造解析してブロックリストを返す *)
+DocPaperAnalyzePage["C:/papers/example.pdf", 1]
+
+(* 論文全文から再現可能な計算・アルゴリズムを抽出する *)
+DocPaperExtractComputations["C:/papers/example.pdf"]
+```
+
+直近の `DocImportPaper` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
 
 ---
 

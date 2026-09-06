@@ -11,6 +11,10 @@
    - パレット UI のためのノートブック/セルインデックス解決のみ内部で行う。
 
    依存: NBAccess` (セルアクセス・LLM ルーティング), ClaudeCode` (LLM コールバック)
+
+   サブモジュール:
+   - documentation_paper2nb.wl -- 論文 PDF → ノートブック逆変換 (DocImportPaper)。
+     本ファイル末尾で自動ロード。順変換 (LaTeX/Word/Markdown エクスポート) の逆向き。
 *)
 
 BeginPackage["Documentation`"];
@@ -166,6 +170,13 @@ Options[DocRefine] = {Fallback -> False};
 Options[DocPolish] = {Fallback -> False};
 
 Begin["`Private`"];
+
+(* 2026-09-02: 応答型契約。展開/翻訳/更新/分割などテキスト変換系の LLM 呼び出しは
+   常に "PlainText" 契約で行う。ClaudeQueryAsync 側が出力規則の付加・検証・
+   1 回再問合せ・型付き Failure を担当する (<tool_call> 生テキスト等が段落として
+   セルに流れた実機不具合への恒久対策)。構造化出力 (文献補完/引用挿入) は対象外。 *)
+iDocLLMPlain[args___] := NBAccess`$NBLLMQueryFunc[args, "ResponseFormat" -> "PlainText"];
+iDocTransformPlain[args___] := NBAccess`NBCellTransformWithLLM[args, "ResponseFormat" -> "PlainText"];
 
 (* ============================================================
    ローカリゼーション
@@ -938,7 +949,7 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         iL["パラグラフ更新中...", "Updating paragraph..."]];
       iDocSetJobAnchorCell[nb, cellIdx];
       With[{nb2 = nb, ci = cellIdx, ss = savedScroll},
-        NBAccess`$NBLLMQueryFunc[prompt,
+        iDocLLMPlain[prompt,
           Function[response,
             If[StringQ[response] && !StringStartsQ[response, "Error"] &&
                !StringStartsQ[response, "[ERROR]"],
@@ -956,7 +967,7 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                   dir2 = iDocCollectDirectives[nb2];
                   dict2 = iDocCollectDictionary[nb2];
                   ctx2 = dir2 <> dict2 <> iDocCollectContext[nb2, ci];
-                  NBAccess`$NBLLMQueryFunc[
+                  iDocLLMPlain[
                     iDocReTranslatePromptFn[StringTrim[response], tl, oldTrans, idea2, ctx2],
                     Function[tResponse,
                       If[StringQ[tResponse] && !StringStartsQ[tResponse, "Error"] &&
@@ -1017,7 +1028,7 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
        他のリクエストに応答する隙間を作る。 *)
     iDocSetJobAnchorCell[nb, cellIdx];
     With[{nb2 = nb, cellAtts = iDocGetCurrentAttachments[nb], ss = savedScroll},
-      NBAccess`NBCellTransformWithLLM[nb, cellIdx,
+      iDocTransformPlain[nb, cellIdx,
         promptFn,
         (* completionFn: LLM 応答後に呼ばれる軽量ラッパー。
            本体処理は iDocOneShotAfter で 0.1秒後に共有 tick 経由実行。 *)
@@ -1056,9 +1067,15 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                   Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]]],
                 (* エラー *)
                 Quiet[SetOptions[nb2, NotebookAutoScroll -> ss]];
+                (* 2026-09-02: 実エラー文 (NBAccess`$NBLLMLastError) を併記する。
+                   これまでは一般文しか出ず、LM Studio の plugin 拒否 400 等が
+                   ユーザーに見えなかった。 *)
                 MessageDialog[iL[
                   "エラー: LLM 応答を取得できませんでした。",
-                  "Error: Could not get LLM response."]]],
+                  "Error: Could not get LLM response."] <>
+                  With[{e = NBAccess`$NBLLMLastError},
+                    If[StringQ[e] && StringTrim[e] =!= "",
+                      "\n\n" <> StringTake[StringTrim[e], UpTo[600]], ""]]]],
               {0.1}]]],
         Fallback -> useFallback]
     ];
@@ -1414,7 +1431,7 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
         iL["翻訳更新中...", "Updating translation..."]];
       iDocSetJobAnchorCell[nb, cellIdx];
       With[{nb2 = nb, ci = cellIdx, srcPara = paragraph, ss = savedScroll},
-        NBAccess`$NBLLMQueryFunc[prompt,
+        iDocLLMPlain[prompt,
           Function[response,
             If[StringQ[response] && !StringStartsQ[response, "Error"] &&
                !StringStartsQ[response, "[ERROR]"],
@@ -1502,7 +1519,7 @@ DocTranslate[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     With[{nb2 = nb, srcText = currentText,
           isPlain = (!StringQ[mode] || mode === "translated"),
           ss = savedScroll},
-      NBAccess`NBCellTransformWithLLM[nb, cellIdx,
+      iDocTransformPlain[nb, cellIdx,
         promptFn,
         (* completionFn: 遅延実行ラッパー *)
         Function[result,
@@ -1587,7 +1604,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
               hasTranslation = StringQ[translation] && StringTrim[translation] =!= "",
               oldTranslation = If[StringQ[translation], translation, ""],
               idea = ideaText, stag = syncTag, ctx = context},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx},
               NBAccess`NBInvalidateCellsCache[nb2];
@@ -1603,7 +1620,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
                       iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
                     Module[{tPrompt = iDocReTranslatePromptFn[
                         newPara, tl, oldTranslation, idea, ctx]},
-                      NBAccess`$NBLLMQueryFunc[tPrompt,
+                      iDocLLMPlain[tPrompt,
                         Function[tResponse,
                           Module[{idx2},
                           NBAccess`NBInvalidateCellsCache[nb2];
@@ -1658,7 +1675,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
           iL["同期中: 翻訳更新...", "Syncing: updating translation..."]];
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph, stag = syncTag},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx},
               NBAccess`NBInvalidateCellsCache[nb2];
@@ -1695,7 +1712,7 @@ DocSync[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
           iL["同期中: パラグラフ更新...", "Syncing: updating paragraph..."]];
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, origIdx = cellIdx, m = mode, stag = syncTag},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx},
               NBAccess`NBInvalidateCellsCache[nb2];
@@ -1792,7 +1809,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph,
               stag = syncTag, ss = savedScroll, fb = useFb},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx, curMode, curShow},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -1840,7 +1857,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
               stag = syncTag, fb = useFb, ss = savedScroll,
               hasTranslation = StringQ[translation] && StringTrim[translation] =!= "",
               oldTranslation = If[StringQ[translation], translation, ""]},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx, newPara, curMode, curShow},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -1874,7 +1891,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
                     Module[{tl = iDocTranslationTargetForText[newPara], tPrompt},
                       tPrompt = iDocReTranslatePromptFn[
                         newPara, tl, oldTranslation, idea, ctx];
-                      NBAccess`$NBLLMQueryFunc[tPrompt,
+                      iDocLLMPlain[tPrompt,
                         Function[tResponse,
                           Module[{idx2, cMode, cShow},
                             NBAccess`NBInvalidateCellsCache[nb2];
@@ -1939,7 +1956,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, origIdx = cellIdx, stag = syncTag, ss = savedScroll,
               fb = useFb},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx, newPara, curMode, curShow},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -1994,7 +2011,7 @@ iDocPostToggleSync[nb_NotebookObject, cellIdx_Integer,
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, origIdx = cellIdx, srcPara = paragraph,
               stag = syncTag, ss = savedScroll, fb = useFb},
-          NBAccess`$NBLLMQueryFunc[prompt,
+          iDocLLMPlain[prompt,
             Function[response,
               Module[{idx, curMode, curShow},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -2382,7 +2399,7 @@ iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
           hasTranslation = StringTrim[translation] =!= "",
           oldTranslation = translation,
           pvl = privLevel},
-      NBAccess`$NBLLMQueryFunc[prompt,
+      iDocLLMPlain[prompt,
         Function[response,
           Module[{idx, newPara, curMode, curShow},
             NBAccess`NBInvalidateCellsCache[nb2];
@@ -2409,7 +2426,7 @@ iDocSyncOneCellAsync[nb_NotebookObject, cellIdx_Integer, fb_, onDone_] :=
                 Module[{tl = iDocTranslationTargetForText[newPara], tPrompt},
                   tPrompt = iDocReTranslatePromptFn[newPara, tl,
                     oldTranslation, idea, ctx];
-                  NBAccess`$NBLLMQueryFunc[tPrompt,
+                  iDocLLMPlain[tPrompt,
                     Function[tResponse,
                       Module[{idx2, cMode, cShow},
                         NBAccess`NBInvalidateCellsCache[nb2];
@@ -3174,7 +3191,7 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
               fAlt = frontAlt, bAlt = backAlt},
-          NBAccess`$NBLLMQueryFunc[promptAlt,
+          iDocLLMPlain[promptAlt,
             Function[response,
               Module[{fp, bp, curMode1, curMode2, curShow1, curShow2, parsed},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -3212,7 +3229,7 @@ DocSplitCell[nb_NotebookObject, cellIdx_Integer] :=
         iDocSetJobAnchorCell[nb, cellIdx];
         With[{nb2 = nb, ci1 = cellIdx, ci2 = newCellIdx,
               fTrans = frontTrans, bTrans = backTrans},
-          NBAccess`$NBLLMQueryFunc[promptTrans,
+          iDocLLMPlain[promptTrans,
             Function[response,
               Module[{fp, bp, cMode1, cShow1, cMode2, cShow2, parsed},
                 NBAccess`NBInvalidateCellsCache[nb2];
@@ -6437,6 +6454,11 @@ ShowDocPalette[] := (
           RGBColor[0.3, 0.45, 0.6], iDocExportWordAction[]],
         iDocButton2[iL["+Math", "+Math"],
           RGBColor[0.35, 0.35, 0.6], iDocExportWordMathAction[]]],
+      (* 逆変換: 論文 PDF → ノートブック (documentation_paper2nb.wl)。
+         ファイル選択ダイアログ → DocImportPaper。数分かかりカーネルを占有する。 *)
+      iDocButton[iL["\[LeftArrowBar] 論文PDF", "\[LeftArrowBar] Paper PDF"],
+        RGBColor[0.35, 0.5, 0.45],
+        iDocImportPaperAction[]],
       iDocButton[iL["\[Times] 除外切替", "\[Times] Excl Toggle"],
         RGBColor[0.6, 0.35, 0.35],
         iDocToggleExportExclude[]],
@@ -8030,6 +8052,18 @@ iDocPolishSelectedChain[nb_, idxs_, pos_, fb_] :=
 
 End[];
 EndPackage[];
+
+(* ---- サブモジュール: 論文 PDF → ノートブック逆変換 (documentation_paper2nb.wl) ----
+   毎回ロードする (ResoniteRealtime と同じ理由: サブモジュールだけ直したとき古い定義を残さない)。
+   DocImportPaper / DocPaperAnalyzePage / DocPaperExtractComputations / DocPaperTeXToBoxes /
+   DocPaperTextToTextData とパレット用 iDocImportPaperAction を定義する。 *)
+Module[{dir = Quiet @ Check[DirectoryName[$InputFileName], ""], f},
+  If[!StringQ[dir] || dir === "",
+    dir = Quiet @ Check[ToString[Global`$packageDirectory], ""]];
+  f = FileNameJoin[{dir, "documentation_paper2nb.wl"}];
+  If[FileExistsQ[f],
+    Block[{$CharacterEncoding = "UTF-8"}, Get[f]],
+    Print["documentation: documentation_paper2nb.wl が見つからないためスキップ (", f, ")"]]];
 
 (* パッケージロード時にパレットを自動表示 *)
 Documentation`ShowDocPalette[];

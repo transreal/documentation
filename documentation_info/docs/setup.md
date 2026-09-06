@@ -39,6 +39,16 @@ macOS/Linux ではパス区切りやシェルコマンドを適宜読み替え�
 例: C:\Users\<ユーザー名>\Documents\WolframPackages\documentation.wl
 ```
 
+#### 論文 PDF 逆変換サブモジュール（任意）
+
+論文 PDF をノートブックに逆変換する機能（`DocImportPaper` 等）を使う場合は、  
+[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb) から  
+`documentation_paper2nb.wl` を取得し、`documentation.wl` と同じ `$packageDirectory` に配置してください。
+
+`documentation.wl` はロード時に `$packageDirectory` 内の `documentation_paper2nb.wl` を自動検出して読み込みます。  
+ファイルが存在しない場合はエラーにはならず、当該機能のみが無効化されます（コンソールにスキップメッセージが表示されます）。  
+この機能を使わない場合は配置不要です。
+
 ### 2. $packageDirectory の確認
 
 Mathematica 上で以下を実行し、`$packageDirectory` が設定済みであることを確認します。
@@ -116,14 +126,17 @@ Block[{$CharacterEncoding = "UTF-8"},
 ]
 ```
 
-依存パッケージ（`NBAccess`・`ClaudeCode`）は `documentation.wl` 内で自動的に `Needs` されます。
+依存パッケージ（`NBAccess`・`ClaudeCode`）は `documentation.wl` 内で自動的に `Needs` されます。  
+`documentation_paper2nb.wl` が `$packageDirectory` に存在する場合は、続けて自動的にロードされます。
 
 ---
 
 ## API キーの設定
 
-`documentation` パッケージの LLM 機能（アイデア展開・翻訳・計算）は  
-`NBAccess` および `claudecode` 経由で Anthropic Claude API を呼び出します。
+`documentation` パッケージの LLM 機能（アイデア展開・翻訳・計算・論文 PDF 逆変換）は  
+`NBAccess` および `claudecode` 経由で Anthropic Claude API を呼び出します。  
+テキスト変換系の LLM 呼び出し（展開・翻訳・更新・分割など）は内部で「PlainText 応答契約」に統一されており、  
+応答が不正な形式の場合は 1 回だけ再問合せしたうえで型付き `Failure` を返します（利用者側での追加設定は不要です）。
 
 API キーの設定は `claudecode` パッケージの手順に従ってください。  
 設定済みであれば追加の操作は不要です。
@@ -180,6 +193,27 @@ LLM は生成コードを 1 つのコードブロックにまとめて出力し�
 複数セルを選択した状態でパレットの「計算」ボタンを押すと、選択セルを順番に連鎖実行します。  
 同様に「×展開」「×翻訳」ボタンで選択セルの展開結果・翻訳結果をまとめて削除できます。
 
+### 論文 PDF 逆変換のテスト（documentation_paper2nb.wl 導入時のみ）
+
+パレットの「← 論文PDF」（英語表示では "← Paper PDF"）ボタンを押すと、ファイル選択ダイアログが表示され、  
+選択した論文 PDF を解析してノートブックへ逆変換します（`DocImportPaper` に相当）。  
+処理には数分かかりカーネルを占有するため、実行中は他の操作を控えてください。  
+`documentation_paper2nb.wl` を配置していない場合、このボタンおよび関連機能は利用できません。
+
+個別ページの構造解析や計算抽出を単独で試す場合は、以下の診断用関数を直接呼び出せます。
+
+```mathematica
+(* PDF の 1 ページを構造解析してブロックリストを返す *)
+DocPaperAnalyzePage["C:/papers/example.pdf", 1]
+
+(* 論文全文から再現可能な計算・アルゴリズムを抽出する *)
+DocPaperExtractComputations["C:/papers/example.pdf"]
+```
+
+直近の `DocImportPaper` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果（ブロック・セル構造など）は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
+
+また、LaTeX 数式文字列を TraditionalForm ボックスに変換する `DocPaperTeXToBoxes`、および `$...$` や `\(...\)` を含む文字列をインライン数式セル埋め込みの TextData に変換する `DocPaperTextToTextData` も公開されており、ノートブック編集スクリプト等から利用できます。
+
 ---
 
 ## エクスポート時の図サイズについて
@@ -190,7 +224,7 @@ LaTeX エクスポート（`DocExportLaTeX`）では、図は `[!htbp]` 配置�
 
 LaTeX プリアンブルは、pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overleaf の和文設定）と pdfLaTeX（`CJKutf8`）のどちらでコンパイルしても正しく組版できるよう、`iftex` パッケージで自動的に切り替わります。生成される `.tex` ファイルはどちらの TeX 処理系でもそのまま使用できます。
 
-本文中の Unicode 数学記号（ギリシャ文字・上付き/下付き文字・∈ × ⌈ 等）や `_ ^ # % &` などの LaTeX 特殊文字は、LLM を使わない決定的な変換で自動的に LaTeX 記法へエスケープされます（`\cite{}` `\ref{}` のキーも ASCII に正規化されます）。`DocExportLaTeX` に `"MathFormat" -> True` を指定すると、この決定的な変換に加えて LLM による数式の自動整形を追加で行います（デフォルト: `False`）。
+本文中の Unicode 数学記号（ギリシャ文字・上付き/下付き文字・∈ × ⌈ 等）や `_ ^ # % &` などの LaTeX 特殊文字は、LLM を使わない決定的な変換で自動的に LaTeX 記法へエスケープされます（`\cite{}` `\ref{}` のキーも ASCII に正規化されます）。`DocExportMarkdown`・`DocExportLaTeX`・`DocExportWord` はいずれも `"MathFormat" -> True` オプションを受け付けます。このオプションを指定すると、決定的な変換に加えて LLM による数式の自動整形を追加で行います（デフォルト: `False`）。
 
 ---
 
@@ -200,16 +234,18 @@ LaTeX プリアンブルは、pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overle
 |------|--------|
 | `Needs::nocntxt` エラー | `$Path` に `$packageDirectory` が含まれているか確認する |
 | `NBAccess` が見つからない | NBAccess を先にロードまたは `$Path` を確認する |
-| LLM が応答しない | `claudecode` の API キー設定を確認する |
+| LLM が応答しない | `claudecode` の API キー設定を確認する。`NBAccess\`$NBLLMLastError` に実エラー文が記録される |
 | 文字化けが発生する | `Block[{$CharacterEncoding = "UTF-8"}, ...]` でロードしているか確認する |
 | `DocExportWord` が失敗する | Pandoc がインストールされているか確認する（`pandoc --version`） |
 | 計算モードのセルに再度「計算」を適用できない | パレットの「×計算」でプロンプト状態に戻してから再実行する |
 | LaTeX エクスポートした図がページ全体に落ちて印刷で読めない | 図セルの `TaggingRules` に `documentation/figFullPage -> True` を設定し、独立ページの全ページ図として出力する |
+| コンソールに「documentation_paper2nb.wl が見つからないためスキップ」と表示される | 論文 PDF 逆変換機能を使わない場合は無視してよい。使う場合は `documentation_paper2nb.wl` を `$packageDirectory` に配置する |
 
 ---
 
 ## 関連リンク
 
 - documentation リポジトリ: [https://github.com/transreal/documentation](https://github.com/transreal/documentation)
+- documentation_paper2nb リポジトリ（論文 PDF 逆変換サブモジュール）: [https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)
 - NBAccess リポジトリ: [https://github.com/transreal/NBAccess](https://github.com/transreal/NBAccess)
 - claudecode リポジトリ: [https://github.com/transreal/claudecode](https://github.com/transreal/claudecode)

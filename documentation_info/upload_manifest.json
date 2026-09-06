@@ -1,7 +1,8 @@
 {
 	"packageName":"documentation",
 	"files":[
-		"documentation.wl"
+		"documentation.wl",
+		"documentation_paper2nb.wl"
 	],
 	"directories":[
 		"documentation_info"

@@ -2,6 +2,7 @@
 
 `Documentation`` パッケージ。アウトラインプロセッサ拡張：アイデア → パラグラフ展開システム。
 依存: [NBAccess`](https://github.com/transreal/NBAccess), [ClaudeCode`](https://github.com/transreal/claudecode)
+サブモジュール: [documentation_paper2nb`](https://github.com/transreal/documentation_paper2nb)（論文 PDF → ノートブック逆変換、documentation.wl 末尾で自動 `Get`）
 ロード: `Block[{$CharacterEncoding = "UTF-8"}, Get["documentation.wl"]]`
 
 ## セル展開・切替
@@ -96,6 +97,35 @@ Options: "MathFormat" -> False (True で LLM による数式自動フォーマ�
 ### DocExportWord[nb, opts]
 ノートブックを Word (.docx) 形式でエクスポートする。内部で DocExportMarkdown を実行し Pandoc で .docx に変換する。Pandoc がインストールされている必要がある。出力先: `NotebookDirectory[]/<ノートブック名>_md/<ノートブック名>.docx`
 Options: "ReferenceDoc" -> None (テンプレート .docx ファイルのパス), "MathFormat" -> False (True で LLM による数式自動フォーマット)
+
+## 論文インポート（PDF → ノートブック逆変換）
+
+`documentation_paper2nb.wl` サブモジュール（documentation.wl 末尾で自動ロード）。順変換（LaTeX/Word/Markdown エクスポート）の逆向きで、論文 PDF を documentation 規約のノートブックへ変換する。第一部で見出し・段落（翻訳 + 原文保持、mode="translated"）・インライン数式（LaTeX → TraditionalForm）・別行立て数式（DisplayFormula、失敗時はページ画像切り出し）・図表（画像切り出し + キャプション）・参考文献を復元し、第二部で論文中の計算・アルゴリズムを Wolfram Language 定義（未評価の Input セル + 実行例）に再構成する。LLM 呼び出しは `ClaudeCode`ClaudeQueryBg`（同期・FE操作なし）を使用。非公開原稿はローカル LLM プロバイダを選ぶこと（生成ノートブックの CloudPublishable 宣言は既定では付与しない）。
+
+### DocImportPaper[pdfPath, opts] → NotebookObject | String (path) | $Failed
+論文 PDF を documentation 規約のノートブックへ逆変換する（上記参照）。既定では PDF と同じフォルダに `<名前>.nb` を保存し、開いた NotebookObject を返す（ヘッドレスならパス、両方失敗すれば未保存の Notebook 式）。
+Options: "TargetLanguage" -> Automatic ($Language), "Translate" -> True, "Reconstruct" -> True (第二部の計算再構成を実行), "Pages" -> All (All | {1,2,...} | Span), "ImageResolution" -> 150, "MathMode" -> "Auto" ("Auto": LaTeX→ボックス失敗時に画像 / "Image": 別行立ては常に画像 / "Text": 画像化しない), "Vision" -> Automatic (ページ画像もLLMへ渡す。失敗時はテキストのみで再試行), "VisionTimeout" -> Automatic (画像付き試行の打ち切り秒数。ローカルLLM 1500秒、他 600秒), "OutputPath" -> Automatic, "Open" -> True, "Save" -> True, "CloudPublishable" -> None (None | True | False, SourceVault 宣言), "Directive" -> Automatic (翻訳指示、Directiveセルにも書かれる), "Dictionary" -> {} ({原語,訳語,文脈} のリスト), "HeadingStyles" -> Automatic ({"Section","Subsection","Subsubsection","Subsubsubsection"}), "Verbose" -> True, Fallback -> False (課金API許可), Model -> Automatic, Timeout -> Automatic
+例: `DocImportPaper["C:/papers/original.pdf"]`
+`DocImportPaper[pdf, "Pages" -> 1 ;; 3, "Reconstruct" -> False]`
+
+### DocPaperAnalyzePage[pdfPath, page, opts] → List | $Failed
+PDF の 1 ページを LLM で構造解析し、読み順に並んだブロック（`<|"type","text","latex","label","ids","translation","Page","Region",...|>`）のリストを返す。DocImportPaper が内部で使う段階処理を単独で試すためのもの。
+Options: "TargetLanguage" -> Automatic, "Translate" -> True, "ImageResolution" -> 150, "Vision" -> Automatic, "Directive" -> Automatic, "Dictionary" -> {}, "Verbose" -> True, "VisionTimeout" -> Automatic, Fallback -> False, Model -> Automatic, Timeout -> Automatic
+
+### DocPaperExtractComputations[pdfPath, opts] / DocPaperExtractComputations[pdfPath, blocks, opts] → Association | $Failed
+論文全文から再現可能な計算を抽出し `<|"summary" -> 要約, "units" -> {<|"title","description","code","example","syntaxOK"|>, ...}, "notes" -> 注意点|>` を返す。blocks を渡すと DocPaperAnalyzePage の全ページ連結結果を本文として使う。
+Options: "TargetLanguage" -> Automatic, "Pages" -> All, "Verbose" -> True, Fallback -> False, Model -> Automatic, Timeout -> Automatic
+
+### DocPaperTeXToBoxes[latex] → BoxData | $Failed
+LaTeX 数式文字列を TraditionalForm のボックス式に変換する。内蔵の簡易 LaTeX パーサ（添字・分数・根号・行列環境・ギリシャ文字・演算子記号）を優先し、失敗時は `ToExpression[..., TeXForm] → ToBoxes` にフォールバックする。両方失敗なら $Failed。
+例: `Cell[BoxData[FormBox[DocPaperTeXToBoxes["\\frac{a}{b}"], TraditionalForm]], "DisplayFormula"]`
+
+### DocPaperTextToTextData[text] → TextData | String
+`$...$` / `\(...\)` を含む文字列を、インライン数式セルを埋め込んだ TextData に変換する。数式が無ければ文字列をそのまま返す。Text セルの内容としてそのまま使える。
+
+### $DocPaperLastAnalysis
+型: Association, 初期値: なし（実行後に設定）
+直近の DocImportPaper / DocPaperAnalyzePage / DocPaperExtractComputations の中間結果（`<|"PDF","Pages","Blocks","Computations","Cells"|>`）。デバッグと再利用のために保持する。
 
 ## パレット
 
