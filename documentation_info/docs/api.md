@@ -8,12 +8,12 @@
 ## セル展開・切替
 
 ### DocExpandIdea[nb, cellIdx, opts]
-指定セルのアイデアテキストを LLM でパラグラフに展開する。既にパラグラフ表示中なら現在のパラグラフを尊重しつつインプレース更新する。元のアイデアは TaggingRules に保存される。Note/Dictionary/Directive セルは対象外。
+指定セルのアイデアテキストを LLM でパラグラフに展開する。既にパラグラフ表示中なら現在のパラグラフを尊重しつつインプレース更新する。元のアイデアは TaggingRules に保存される。Bibliography セルがあれば引用候補コンテキストも自動収集してプロンプトに含める。Note/Dictionary/Directive セルは対象外。
 → $Failed（失敗時）
 Options: Fallback -> False (True でフォールバック LLM を使用)
 
 ### DocToggleView[nb, cellIdx] → String | $Failed
-セルの表示モードを循環切替する。モード別動作: 通常セルはアイデア ↔ パラグラフ（→ 翻訳があれば翻訳へ）、mode="translated" セルは元テキスト ↔ 翻訳、mode="compute"/"computePrompt" セルはコード ↔ プロンプト、mode="figClean"/"figOutline" セルは手書き ↔ 清書済み図（`iDocToggleFigureClean` に委譲）。現在表示中の内容（編集済みでも）を保存してから切り替える。編集済みの場合（figClean/compute を除く）は他レイヤーをバックグラウンドで LLM 同期する。Note/Dictionary/Directive セルは対象外。
+セルの表示モードを循環切替する。モード別動作: 通常セルはアイデア ↔ パラグラフ（→ 翻訳があれば翻訳へ）、mode="translated" セルは元テキスト ↔ 翻訳、mode="compute"/"computePrompt" セルはコード ↔ プロンプト、mode="figClean"/"figOutline" セルは手書き ↔ 清書済み図（`iDocToggleFigureClean` に委譲）。現在表示中の内容（編集済みでも）を保存してから切り替える。編集済みの場合（figClean/compute を除く）は他レイヤーをバックグラウンドで LLM 同期する（`iDocPostToggleSync`、切替前後の状態パターン別に4ケースで分岐: パラグラフ編集→翻訳更新、アイデア編集→パラグラフ再生成、翻訳表示中編集→元パラグラフ逆更新、translated セル元テキスト編集→翻訳更新）。Note/Dictionary/Directive セルは対象外。
 
 ### DocSplitCell[nb, cellIdx]
 カーソル位置でセルを前半・後半に分割する。パラグラフ/翻訳表示中は表示テキストと保存データを対応位置で分割し、プロンプトがあれば LLM で前半・後半用に再生成する。普通のセルはテキストを単純に分割する。
@@ -36,7 +36,7 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 ## 翻訳・同期
 
 ### DocTranslate[nb, cellIdx, opts]
-セルのテキストを翻訳する。翻訳結果は TaggingRules に保持し DocToggleView で切替可能。パラグラフモードと普通のセル（モード未設定）が対象。アイデアモード・翻訳表示中は対象外。
+セルのテキストを翻訳する。翻訳結果は TaggingRules に保持し DocToggleView で切替可能。パラグラフモードと普通のセル（モード未設定）が対象。アイデアモード・翻訳表示中は対象外。普通のセルは言語を自動検出し、テキストが基準言語なら $DocTranslationLanguage へ、それ以外なら基準言語へ翻訳する。
 → $Failed（失敗時）
 Options: Fallback -> False (True でフォールバック LLM を使用)
 
@@ -46,7 +46,7 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 Options: Fallback -> False (True でフォールバック LLM を使用)
 
 ### DocSyncAll[nb, opts]
-ノートブック内の全 paragraph/idea セルを現在の指示・辞書・プロンプトに従って一括再生成する。翻訳があれば連鎖的に翻訳も更新する。指示/辞書セルの最終更新時刻より後に編集されたセルはスキップ（高速化）。確認ダイアログを表示後、非同期でフロントエンドをブロックせず処理する。
+ノートブック内の全 paragraph/idea セルを現在の指示・辞書・プロンプトに従って一括再生成する（コールバックチェーン方式で逐次実行、フロントエンドをブロックしない）。翻訳があれば連鎖的に翻訳も更新する。指示/辞書セルの最終更新時刻より後に編集されたセルはスキップ（高速化）。確認ダイアログを表示後、非同期でフロントエンドをブロックせず処理する。
 Options: Fallback -> False (True でフォールバック LLM を使用)
 
 ## 計算モード
@@ -59,17 +59,17 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 ## セル挿入
 
 ### DocInsertNote[nb]
-現在のカーソル位置に Note スタイルのセルを挿入する。ノートブックにスタイル "Note" が定義済みならそれを使用し、なければカスタム定義の Note セルを挿入する。
+現在のカーソル位置に Note スタイルのセルを挿入する。ノートブックにスタイル "Note" が定義済みならそれを使用し、なければカスタム定義の Note セルを挿入する（薄い黄色背景）。
 
 ### DocInsertDictionary[nb]
-現在のカーソル位置に Dictionary スタイルのセルを挿入する。翻訳時に LLM が遵守する用語対応を指定する。
+現在のカーソル位置に Dictionary スタイルのセルを挿入する。翻訳時に LLM が遵守する用語対応を指定する（薄い青緑背景）。
 形式: `{{<<Japanese>>, <<English>>, <<Context>>}, {"用語1", "term1", "文脈"}, ...}`（1行目はヘッダー、2行目以降が Context における用語対応）
 
 ### DocInsertDirective[nb]
-現在のカーソル位置に Directive スタイルのセルを挿入する。展開・翻訳・同期の実行時に LLM が順守すべき指示を記載する。複数の Directive セルを配置可能。
+現在のカーソル位置に Directive スタイルのセルを挿入する。展開・翻訳・同期の実行時に LLM が順守すべき指示を記載する（薄い赤紫背景）。複数の Directive セルを配置可能。
 
 ### DocInsertBibliography[nb]
-現在のカーソル位置に Bibliography スタイルのセルを挿入する。参考文献リストを管理する。
+現在のカーソル位置に Bibliography スタイルのセルを挿入する。参考文献リストを管理する（薄い灰青背景）。
 形式: `{{<<Key>>, <<Author>>, <<Year>>, <<Title>>}, {"key", "author", "year", "title"}, ...}`
 本文中で `<<cite:key>>` と記述するとエクスポート時に自動変換される。
 
@@ -82,7 +82,7 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 セルの依存資料を編集する。アタッチされた PDF のうちそのセルの内容生成に使われた資料と参照ページ番号を設定する。LaTeX+Math エクスポート時に該当ページのみを LLM に送付してトークン消費を削減する。
 
 ### DocAutoInsertCitations[nb]
-ノートブック内の全セルに自動引用を挿入する。依存資料（refSources）から文献リストを構築し LLM が本文中の適切な位置に `<<cite:key>>` マーカーを挿入する。Bibliography セルが存在しなければ末尾に自動生成する。
+ノートブック内の全セルに自動引用を挿入する。依存資料（refSources）から文献リストを構築し LLM が本文中の適切な位置に `<<cite:key>>` マーカーを挿入する。Bibliography セルが存在しなければ末尾に自動生成する。非同期チェーン実行でフロントエンドをブロックしない。
 
 ## エクスポート
 
@@ -130,7 +130,7 @@ LaTeX 数式文字列を TraditionalForm のボックス式に変換する。内
 ## パレット
 
 ### ShowDocPalette[] → NotebookObject
-ドキュメント作成用パレットを表示する。
+ドキュメント作成用パレットを表示する。展開・トグル・校正・更新・翻訳・分割・合併・エクスポート等のボタンを提供する（Method -> "Queued" で評価、フロントエンド競合を回避）。
 
 ## 変数
 

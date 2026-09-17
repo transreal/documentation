@@ -1,7 +1,7 @@
 # documentation_paper2nb API Reference
 
 Context: `Documentation\`` (this file extends documentation.wl; load via `Get["documentation_paper2nb.wl"]` after documentation.wl, or let documentation.wl's trailing `Get` load it).
-Dependencies: `NBAccess\`` ([NBAccess](https://github.com/transreal/NBAccess)), `ClaudeCode\`` ([claudecode](https://github.com/transreal/claudecode)).
+Dependencies: `NBAccess\`` ([NBAccess](https://github.com/transreal/NBAccess)), `ClaudeCode\`` ([claudecode](https://github.com/transreal/claudecode)). Optional: `SourceVault\`` / `SourceVault_papernb` ([SourceVault](https://github.com/transreal/SourceVault), [SourceVault_papernb](https://github.com/transreal/SourceVault_papernb)) — only used when `DocImportPaper` is called with a SourceVault reference instead of a local PDF path.
 
 ## Overview
 Converts a paper PDF into a documentation-convention notebook (reverse direction of documentation.wl's notebook→LaTeX/Word/Markdown). Two parts:
@@ -10,12 +10,15 @@ Converts a paper PDF into a documentation-convention notebook (reverse direction
 
 Element positioning: `Import[pdf, {"PagePositionedObjects", p}]` gives text blocks with PDF-space bounding boxes (origin bottom-left); blocks are numbered `[Bn]` and shown to the LLM, which returns the block ids composing each figure/table/equation. Crop regions are the union of those ids' rectangles, extended to neighboring-block boundaries for a figure with no interior text. Page images (`Import[pdf, {"PageImages", p}, ImageResolution -> r]`) are indexed via `px = x*r/72`, `py = (H - y)*r/72`.
 
-LLM calls go through `ClaudeCode\`ClaudeQueryBg` (synchronous, no FE interaction, no ScheduledTask). Page images are passed as `{prompt, image}` list items; non-CLI (raw API) providers need `Fallback -> True` for vision. JSON responses are read with `ImportByteArray[..., "RawJSON"]`.
+LLM calls go through `ClaudeCode\`ClaudeQueryBg` (synchronous, no FE interaction, no ScheduledTask). Page images are passed as `{prompt, image}` list items; non-CLI (raw API) providers need `Fallback -> True` for vision. JSON responses are read with `ImportByteArray[..., "RawJSON"]`. LLM server connection failures are tracked across pages: 2 consecutive connection failures abort the remaining pages (see `DocImportPaper::abort`) rather than spending the whole run on a dead server.
+
+SourceVault delegation: when `DocImportPaper` is called with a reference string instead of a local file path (`"src-..."`, `"sv://..."`, `"arxiv:..."`, or an `http://`/`https://` URL) and `SourceVault\`SourceVaultMakePaperNotebook` is loaded, the call is delegated to it. The ingested source's `PrivacyLevel` is inherited: PL < 0.5 uses the normal cloud LLM path plus a `CloudPublishable` declaration on the output notebook; PL >= 0.5 restricts the LLM path to `$ClaudePrivateModel` only. A plain local PDF path never takes this branch (no PrivacyLevel to inherit, so no declaration is applied automatically — see `"CloudPublishable"` below).
 
 Privacy: PDF text and page images are sent to whichever LLM provider is selected in the palette. Use a local provider (e.g. lmstudio) for unpublished manuscripts. `"CloudPublishable"` is NOT set by default; pass `True`/`False` explicitly to have `NBSetCloudPublishable` applied to the output notebook.
 
 ## DocImportPaper[pdfPath, opts]
-Converts a paper PDF into a documentation-convention notebook (Part 1 + Part 2) and saves/opens it.
+## DocImportPaper[sourceRef, opts]
+Converts a paper PDF into a documentation-convention notebook (Part 1 + Part 2) and saves/opens it. `sourceRef` (`"src-..."`, `"sv://..."`, `"arxiv:..."`, or an `http://`/`https://` URL) delegates to `SourceVault\`SourceVaultMakePaperNotebook` instead (see Overview) — only when that symbol is loaded and the ref is not itself an existing local file.
 → NotebookObject (if opened in a front end) | file path string (headless) | $Failed
 Options: "TargetLanguage" -> Automatic (defaults to $Language, else "English"), "Translate" -> True, "Reconstruct" -> True (run Part 2), "Pages" -> All | {1,2,...} | Span, "ImageResolution" -> 150, "MathMode" -> "Auto" ("Auto": LaTeX→boxes else image fallback; "Image": display math always cropped from page image; "Text": never falls back to an image, keeps raw LaTeX text), "Vision" -> Automatic (page images also sent to LLM; auto-retries text-only on failure/timeout/no-vision-model; False disables), "VisionTimeout" -> Automatic (seconds before a vision-attempt is aborted and retried text-only; auto-resolves to 1500s for local providers (lmstudio/llamacpp/freetoken), 600s otherwise), "OutputPath" -> Automatic (defaults to `<pdf-folder>/<name>.nb`, auto-suffixed `_2`, `_3`, ... to avoid overwrite), "Open" -> True, "Save" -> True, "CloudPublishable" -> None (None: no SourceVault declaration; True|False: applies NBSetCloudPublishable), "Directive" -> Automatic (translation instruction, also written into the Directive cell; language-dependent default), "Dictionary" -> {} (list of {sourceTerm, targetTerm, context} triples, written into the Dictionary cell and the translation prompt), "HeadingStyles" -> Automatic ({"Section","Subsection","Subsubsection","Subsubsubsection"}), "Verbose" -> True, Fallback -> False (allow paid/cloud API), Model -> Automatic, Timeout -> Automatic
 例:
@@ -23,6 +26,7 @@ Options: "TargetLanguage" -> Automatic (defaults to $Language, else "English"), 
 DocImportPaper["C:/papers/original.pdf"]
 DocImportPaper[pdf, "Pages" -> 1 ;; 3, "Reconstruct" -> False]
 DocImportPaper[pdf, "MathMode" -> "Image", "Vision" -> False, "CloudPublishable" -> False]
+DocImportPaper["arxiv:2401.12345"]  (* delegates to SourceVault, inherits its PrivacyLevel *)
 ```
 
 ## DocPaperAnalyzePage[pdfPath, page, opts]
@@ -53,5 +57,6 @@ Holds the intermediate state of the most recent DocImportPaper / DocPaperAnalyze
 DocImportPaper::nofile — PDF file not found.
 DocImportPaper::nopages — could not determine PDF page count.
 DocImportPaper::llm — LLM call failed.
+DocImportPaper::abort — LLM server connection failed for 2 consecutive pages; aborts remaining pages and returns $Failed.
 DocImportPaper::json — LLM response could not be parsed as JSON (page `n`).
 DocImportPaper::syntax — reconstructed code still fails SyntaxQ after one fix attempt; inserted as-is.

@@ -41,7 +41,7 @@ Documentation パッケージは、Mathematica ノートブック上で **LLM �
 - **自動引用挿入**: 依存資料から文献リストを構築し、本文に引用マーカーを自動挿入
 - **除外切替**: 選択セルをエクスポート対象外に設定/解除
 - **エクスポート** *(試験的)*: ノートブックを Markdown、LaTeX、または MS-Word 形式で出力（+Math オプションで数式を LLM により自動フォーマット。LaTeX エクスポートは Unicode 数式記号の決定的変換や pLaTeX/pdfLaTeX 両対応も備える）
-- **論文インポート（逆変換）**: PDF 形式の論文ファイルを解析し、本文・数式・計算過程などをノートブックのセルとして再構成（Markdown/LaTeX/Word エクスポートの逆方向）
+- **論文インポート（逆変換）**: PDF 形式の論文ファイルを解析し、本文・数式・計算過程などをノートブックのセルとして再構成（Markdown/LaTeX/Word エクスポートの逆方向）。ローカル PDF に加え、SourceVault に取り込み済みの論文を参照文字列（`src-...` / `sv://...` / `arxiv:...`）から変換することも可能
 
 ---
 
@@ -52,7 +52,7 @@ Documentation パッケージは、Mathematica ノートブック上で **LLM �
 
 パッケージのロード方法は `setup.md` を参照してください。
 
-論文PDFインポート機能（後述）は、documentation パッケージ本体に加えて documentation_paper2nb サブモジュール（[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)）を使用します。このサブモジュールは `Needs["Documentation`"]` 時に自動的にロードされるため、別途手動でロードする必要はありません。
+論文PDFインポート機能（後述）は、documentation パッケージ本体に加えて documentation_paper2nb サブモジュール（[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)）を使用します。このサブモジュールは `Needs["Documentation`"]` 時に自動的にロードされるため、別途手動でロードする必要はありません。SourceVault に取り込み済みの論文を参照文字列から変換したい場合は、追加で SourceVault パッケージ（[https://github.com/transreal/SourceVault](https://github.com/transreal/SourceVault)）がロードされている必要があります（未ロードの場合、参照文字列による変換は行われずローカル PDF パスとしてのみ扱われます）。
 
 ---
 
@@ -552,6 +552,10 @@ PDF 形式の論文ファイルを選択し、その内容をノートブック�
 
 > **注意**: 変換精度は PDF のレイアウト・組版に依存します。数式や複雑な表・図は完全には再現されない場合があるため、変換後は内容を確認・手直ししてください。
 
+> **注意（接続失敗時の自動中断）**: LMStudio などローカル LLM サーバへの接続に失敗する状態（URL 設定違い・サーバ未起動など）が **2 ページ連続**した場合、変換処理は残りのページを空回りさせずに中断します（`DocImportPaper::abort` メッセージで通知）。大量のページが接続失敗のまま流れてしまう事態を避けるための保護です。接続設定を確認してから再実行してください。
+
+> **補足（SourceVault 連携）**: パレットの **← 論文PDF** ボタン自体は常にファイル選択ダイアログを介したローカル PDF 変換です。SourceVault に取り込み済みの論文を `"src-..."` / `"sv://..."` / `"arxiv:..."` などの参照文字列から変換したい場合は、API から直接 `DocImportPaper[ref]` を呼び出してください（詳細は後述の API リファレンスを参照）。
+
 ---
 
 ### 設定
@@ -912,11 +916,25 @@ DocExportWord[EvaluationNotebook[], "ReferenceDoc" -> "/path/to/template.docx"]
 5. 以降は通常の Documentation セルと同様に **▶ 展開**・**» 翻訳**・**修正**・**更新** などで編集を進められる
 
 ```mathematica
-(* API から直接呼び出す例 *)
+(* API から直接呼び出す例（ローカル PDF ファイルパスを直接指定） *)
 DocImportPaper[]
+DocImportPaper["/path/to/paper.pdf"]
 ```
 
-> **注意**: PDF のレイアウトや組版が複雑な場合、数式・表・図の変換精度が下がることがあります。変換後は必ず内容を確認してください。
+**SourceVault に取り込み済みの論文を参照で変換する場合**:
+
+```mathematica
+(* SourceVault のソース ID / URI / arXiv ID を渡すと SourceVaultMakePaperNotebook に委譲される *)
+DocImportPaper["src-abc123"]
+DocImportPaper["sv://papers/abc123"]
+DocImportPaper["arxiv:2401.01234"]
+```
+
+- ローカルの PDF パスを直接渡す従来の呼び方とは異なり、この形式では **元ソースの PrivacyLevel を継承** します
+- PrivacyLevel が低い（PL < 0.5）場合はクラウド経路 + `CloudPublishable` 宣言、高い（PL >= 0.5）場合は `$ClaudePrivateModel`（ローカルモデル）のみが使われます
+- SourceVault パッケージがロードされていない場合はこの参照形式は使えず、通常の PDF パスとして処理されます
+
+> **注意**: PDF のレイアウトや組版が複雑な場合、数式・表・図の変換精度が下がることがあります。変換後は必ず内容を確認してください。LLM サーバへの接続失敗が2ページ連続した場合は、残りのページを処理せずに変換を中断します。
 
 ---
 
@@ -1480,11 +1498,38 @@ PDF 形式の論文ファイルを解析し、ノートブックに逆変換し�
 
 PDF の本文・数式・図・計算過程などを解析し、対応するセル（テキストセル・数式セル・Input セルなど）を生成してノートブックに書き込みます。パレットからは **← 論文PDF** ボタンで、ファイル選択ダイアログを介して呼び出すのが基本的な使い方です。
 
+**入力の形式**
+
+`DocImportPaper` は次の種類の引数を受け付けます。
+
+| 呼び方 | 説明 | PrivacyLevel の扱い |
+|---|---|---|
+| `DocImportPaper[]` | ファイル選択ダイアログを開いて PDF を指定 | 継承なし（宣言なし） |
+| `DocImportPaper[pdfPath]` | ローカル PDF ファイルパスを直接指定 | 継承なし（宣言なし） |
+| `DocImportPaper[ref]`（`ref` が `"src-..."` / `"sv://..."` / `"arxiv:..."` / URL のいずれか） | SourceVault に取り込み済みの論文への参照。SourceVault の `SourceVaultMakePaperNotebook` に委譲して変換・登録する | **元ソースの PrivacyLevel を継承**。PL < 0.5 はクラウド経路 + `CloudPublishable` 宣言、PL >= 0.5 は `$ClaudePrivateModel`（ローカルモデル）のみを使用 |
+
+参照文字列を使った変換は、`ref` が既存のローカルファイルとして存在せず、かつ SourceVault パッケージ（`SourceVault``SourceVaultMakePaperNotebook`）がロードされている場合にのみ有効になります。それ以外の場合は通常の PDF パスとして処理されます。
+
+**接続失敗時の自動中断**
+
+LMStudio などローカル LLM サーバへの接続に失敗する状態（URL 設定違い・サーバ未起動など）が **2 ページ連続**すると、残りのページの解析を打ち切って処理を中断します。中断時は `DocImportPaper::abort` メッセージ（「LLM サーバに接続できないため中断します (`N` ページ連続で接続失敗): 詳細」）が出力されます。これは、サーバ未起動のまま論文全ページが空回りして失敗し続ける事態を防ぐための保護機能です。
+
+**画像非対応モデルの自動フォールバック**
+
+使用中のモデル／サーバが画像入力を受け付けない場合（例: `--mmproj` なしで起動した llama.cpp 系サーバが `image input is not supported` エラーを返す場合など）、そのことをセッション内で記憶し、以降のページ解析では画像付き試行を最初から省いてテキストのみで解析します。同じ失敗が繰り返されるのを防ぎ、変換全体の速度を落としません。
+
 **例**
 
 ```mathematica
 (* ファイル選択ダイアログから PDF を指定して変換 *)
 DocImportPaper[]
+
+(* ローカル PDF パスを直接指定（PrivacyLevel は継承されない） *)
+DocImportPaper["/path/to/paper.pdf"]
+
+(* SourceVault の参照から変換（元ソースの PrivacyLevel を継承） *)
+DocImportPaper["src-abc123"]
+DocImportPaper["arxiv:2401.01234"]
 ```
 
 > **注意**: 処理には数分かかることがあり、その間カーネルは占有されます。変換精度は PDF のレイアウトに依存するため、変換後は内容を確認してください。
@@ -1624,6 +1669,6 @@ $ClaudeLMStudioIntegrations = {"mcp/exa"}
 - **清書（図）・×清書、および図セルに対する修正・更新は、画像対応の課金 API を使用します。** 設定の「課金API: 許可」が必要です。LLM への画像／テキスト送信を伴うため応答まで数十秒かかることがあり、その間カーネルはビジー状態になります（完了後に解放されます）。
 - **清書済み（緑枠）のセルに「清書（図）」は再実行できません。** 再生成は **修正**（手書き追記の取り込み）で、または **↔ 切替** で元に戻してから行ってください。
 - 生成図は表示幅に上限（`$iDocFigureMaxWidth`、既定 760px）が掛かります。図の更新方式やスタイルは `Documentation`Private`$iDocFigurePolishMethod` ほかの設定変数で切り替えられます（「設定変数 › 図機能の設定変数」参照）。
-- **← 論文PDF（`DocImportPaper`）は PDF を解析してノートブックに逆変換する機能です。** 処理には数分かかることがあり、その間カーネルは占有されます。内部的には自動ロードされるサブモジュール documentation_paper2nb（[GitHub](https://github.com/transreal/documentation_paper2nb)）を使用します。変換精度は PDF のレイアウトに依存するため、変換後は内容の確認・手直しを行ってください。
+- **← 論文PDF（`DocImportPaper`）は PDF を解析してノートブックに逆変換する機能です。** 処理には数分かかることがあり、その間カーネルは占有されます。内部的には自動ロードされるサブモジュール documentation_paper2nb（[GitHub](https://github.com/transreal/documentation_paper2nb)）を使用します。変換精度は PDF のレイアウトに依存するため、変換後は内容の確認・手直しを行ってください。ローカル PDF パスの代わりに `"src-..."` / `"sv://..."` / `"arxiv:..."` の参照文字列を渡すと、SourceVault パッケージ経由で元ソースの PrivacyLevel を継承した変換が行われます（PL < 0.5 はクラウド経路 + `CloudPublishable` 宣言、PL >= 0.5 はローカルモデルのみ）。また、LLM サーバへの接続失敗が2ページ連続した場合は残りのページを処理せず中断します（`DocImportPaper::abort`）。画像入力に対応しないモデル／サーバを検出した場合は、以降のページ解析で画像付き試行を自動的に省略します。
 - **展開・翻訳・更新・分割などのテキスト変換系 LLM 呼び出しは、常にプレーンテキスト応答を返す契約に統一されています。** これにより、内部形式の生テキストが誤ってパラグラフの一部として挿入されてしまう不具合が解消されています。
 - **LLM 呼び出しが失敗した場合、エラーメッセージには実際のエラー内容が併記されるようになりました。** 以前は「Error: Could not get LLM response.」という定型文のみでしたが、原因の切り分けがしやすくなっています。

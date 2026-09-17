@@ -214,6 +214,8 @@ DocPaperExtractComputations["C:/papers/example.pdf"]
 
 また、LaTeX 数式文字列を TraditionalForm ボックスに変換する `DocPaperTeXToBoxes`、および `$...$` や `\(...\)` を含む文字列をインライン数式セル埋め込みの TextData に変換する `DocPaperTextToTextData` も公開されており、ノートブック編集スクリプト等から利用できます。
 
+`DocImportPaper` は、LLM サーバへの接続失敗（URL の設定誤りやサーバ停止など）が 2 ページ連続で発生すると、残りのページを空回りさせずに処理を中断します（`DocImportPaper::abort` メッセージが表示されます）。ローカル LLM サーバを使う場合は、事前にサーバが起動していることを確認してください。また、画像入力に対応しないモデル/サーバに接続した場合は、そのセッション中は以後のページで画像付き解析を自動的に省略し、テキストのみで解析を続行します。
+
 ---
 
 ## エクスポート時の図サイズについて
@@ -240,6 +242,7 @@ LaTeX プリアンブルは、pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overle
 | 計算モードのセルに再度「計算」を適用できない | パレットの「×計算」でプロンプト状態に戻してから再実行する |
 | LaTeX エクスポートした図がページ全体に落ちて印刷で読めない | 図セルの `TaggingRules` に `documentation/figFullPage -> True` を設定し、独立ページの全ページ図として出力する |
 | コンソールに「documentation_paper2nb.wl が見つからないためスキップ」と表示される | 論文 PDF 逆変換機能を使わない場合は無視してよい。使う場合は `documentation_paper2nb.wl` を `$packageDirectory` に配置する |
+| `DocImportPaper::abort` が表示され処理が中断する | LLM サーバへの接続失敗が 2 ページ連続で発生した状態。サーバの起動状況や URL 設定を確認してから再実行する |
 
 ---
 

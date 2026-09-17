@@ -61,6 +61,7 @@ Needs["NBAccess`"];
 Needs["ClaudeCode`"];
 
 DocImportPaper::usage =
+  "DocImportPaper[\"src-...\" | \"sv://...\" | \"arxiv:...\"] は SourceVault 取り込み済みの論文を元ソースの PrivacyLevel を継承して変換・登録する (SourceVaultMakePaperNotebook へ委譲: PL < 0.5 は cloud 経路 + CloudPublishable 宣言、PL >= 0.5 は $ClaudePrivateModel のみ)。\n" <>
   "DocImportPaper[pdfPath] は論文 PDF を documentation 規約のノートブックへ逆変換する。\n" <>
   "第一部: 見出し・段落 (翻訳 + 原文保持, mode=\"translated\")・インライン数式 (LaTeX → TraditionalForm)・\n" <>
   "別行立て数式 (DisplayFormula, 失敗時はページ画像の切り出し)・図表 (ページ画像の切り出し + キャプション)・参考文献。\n" <>
@@ -154,6 +155,7 @@ Options[DocPaperExtractComputations] = {
 DocImportPaper::nofile = "PDF ファイルが見つかりません: `1`";
 DocImportPaper::nopages = "PDF のページ数を取得できません: `1`";
 DocImportPaper::llm = "LLM 呼び出しに失敗しました: `1`";
+DocImportPaper::abort = "LLM サーバに接続できないため中断します (`1` ページ連続で接続失敗): `2`";
 DocImportPaper::json = "LLM 応答を JSON として読めませんでした (ページ `1`)。";
 DocImportPaper::syntax = "再構成コード「`1`」は構文修正後も SyntaxQ を通りません。そのまま挿入します。";
 
@@ -244,20 +246,36 @@ iDocPaperQueryRaw[items_List, cfg_Association] :=
 iDocPaperErrorStringQ[res_] :=
   StringQ[res] && (StringStartsQ[StringTrim[res], "Error"] || StringStartsQ[StringTrim[res], "[ERROR]"]);
 
+(* 直近の失敗理由 (DocImportPaper が「接続失敗が続いたら中断」の判定に使う) *)
+If[!StringQ[$iDocPaperLastError], $iDocPaperLastError = ""];
+iDocPaperConnectionErrorQ[s_String] :=
+  StringContainsQ[s, "接続失敗" | "connection failed" | "接続拒否" | "Connection refused" |
+    "接続できません", IgnoreCase -> True];
+iDocPaperConnectionErrorQ[_] := False;
+
 (* 返り値: 応答文字列。失敗は $Failed (メッセージ付き)。 *)
 iDocPaperQuery[items_List, cfg_Association] :=
   Module[{res = iDocPaperQueryRaw[items, cfg]},
     Which[
       !StringQ[res],
+        $iDocPaperLastError = ToString[Head[res]];
         Message[DocImportPaper::llm, ToString[Head[res]]]; $Failed,
       iDocPaperErrorStringQ[res],
+        $iDocPaperLastError = StringTrim[res];
         Message[DocImportPaper::llm, StringTake[StringTrim[res], UpTo[300]]]; $Failed,
-      True, res]];
+      True, $iDocPaperLastError = ""; res]];
 
 (* 画像入力に対応しないモデル (claudecode.wl が "NoVision" を含むエラーで知らせる) を
-   このセッションで覚えておき、以後のページでは画像付き試行を最初から省く *)
+   このセッションで覚えておき、以後のページでは画像付き試行を最初から省く。
+   llama.cpp 系サーバが --mmproj 無しで起動されていると 500 "image input is not supported"
+   が返る。claudecode.wl (2026-09-11) がこれを NoVision へ正規化するが、古い claudecode.wl や
+   別経路で生のまま届いた場合に備えて本文でも判定する。 *)
 If[!ListQ[$iDocPaperNoVisionModels], $iDocPaperNoVisionModels = {}];
 iDocPaperModelKey[cfg_Association] := ToString[{cfg["Model"], ClaudeCode`$ClaudeModel}, InputForm];
+iDocPaperNoVisionQ[res_String] :=
+  StringContainsQ[res, "NoVision"] ||
+  StringContainsQ[res, "image input is not supported", IgnoreCase -> True];
+iDocPaperNoVisionQ[_] := False;
 
 (* 画像付きで問い、失敗したらテキストのみで再試行する。
    画像付きの試行は "VisionTimeout" (既定 600 秒) で打ち切る: 長いプロンプト + 画像で CLI が
@@ -267,14 +285,15 @@ iDocPaperQueryMaybeVision[prompt_String, img_, cfg_Association] :=
     If[TrueQ[cfg["Vision"]] && ImageQ[img] && !MemberQ[$iDocPaperNoVisionModels, key],
       res = iDocPaperQueryRaw[{prompt, img}, Append[cfg, "Timeout" -> cfg["VisionTimeout"]]];
       Which[
-        StringQ[res] && StringContainsQ[res, "NoVision"],
+        iDocPaperNoVisionQ[res],
           AppendTo[$iDocPaperNoVisionModels, key];
           iDocPaperLog[cfg["Verbose"],
-            "このモデルは画像入力に対応しないため、以後はテキストのみで解析します。"];
+            "このモデル/サーバは画像入力を受け付けないため、以後はテキストのみで解析します (" <>
+            StringTake[StringTrim[res], UpTo[400]] <> ")。"];
           res = $Failed,
         !StringQ[res] || iDocPaperErrorStringQ[res],
           iDocPaperLog[cfg["Verbose"], "画像付き問い合わせに失敗 (" <>
-            If[StringQ[res], StringTake[StringTrim[res], UpTo[120]], ToString[Head[res]]] <>
+            If[StringQ[res], StringTake[StringTrim[res], UpTo[240]], ToString[Head[res]]] <>
             ")。テキストのみで再試行します。"];
           res = $Failed,
         True, Null]];
@@ -1407,9 +1426,20 @@ iDocPaperMetaCells[cfg_Association] :=
    Cell[iDocPaperDictionaryCellText[cfg["Dictionary"], cfg["TargetLanguage"]], "Dictionary",
      Sequence @@ $iDocDictionaryCellOpts]};
 
+(* 取り込み済み論文の参照 (src-ID / sv://URI / arxiv:ID / URL) は SourceVault_papernb.wl に委ねる:
+   元ソースの PrivacyLevel を継承して LLM 経路と CloudPublishable 宣言を決め、生成物を登録簿に載せる。
+   (ローカルの PDF パスを直接渡す従来の呼び方は PL を継承しない = 宣言なし) *)
+DocImportPaper[ref_String, opts:OptionsPattern[]] /;
+    ! FileExistsQ[ref] && iDocPaperSourceRefQ[ref] &&
+    Length[DownValues[SourceVault`SourceVaultMakePaperNotebook]] > 0 :=
+  SourceVault`SourceVaultMakePaperNotebook[ref, opts];
+
+iDocPaperSourceRefQ[s_String] := StringStartsQ[s, "src-"] || StringStartsQ[s, "sv://"] ||
+  StringStartsQ[s, "arxiv:", IgnoreCase -> True] || StringStartsQ[s, "http://"] || StringStartsQ[s, "https://"];
+
 DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
   Module[{pdf, cfg, nPages, pages, pageResults = {}, blocks, cells, comp = None, nbExpr, outPath,
-          nb, t0 = AbsoluteTime[], failedPages = {}},
+          nb, t0 = AbsoluteTime[], failedPages = {}, connFail = 0, aborted},
     pdf = AbsoluteFileName[pdfIn];
     If[!StringQ[pdf] || !FileExistsQ[pdf], Message[DocImportPaper::nofile, pdfIn]; Return[$Failed]];
     nPages = Quiet[Import[pdf, "PageCount"]];
@@ -1420,11 +1450,26 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
       cfg["TargetLanguage"] <> ", 数式: " <> cfg["MathMode"] <> ")"];
     $DocPaperLastAnalysis = <|"PDF" -> pdf, "Pages" -> pages|>;
 
-    (* --- 第一部: ページごとの構造解析 --- *)
-    Do[
-      Module[{r = iDocPaperAnalyzePageImpl[pdf, p, nPages, cfg]},
-        If[ListQ[r], AppendTo[pageResults, r], AppendTo[failedPages, p]]],
-      {p, pages}];
+    (* --- 第一部: ページごとの構造解析 ---
+       LLM サーバへの接続失敗 (URL 違い / サーバ停止) が 2 ページ続いたら、残りのページを
+       空回りさせず中断する (2026-09-12: 21 ページ全部が「接続失敗」で流れた事例)。 *)
+    $iDocPaperLastError = "";
+    aborted = Catch[
+      Do[
+        Module[{r = iDocPaperAnalyzePageImpl[pdf, p, nPages, cfg]},
+          If[ListQ[r],
+            AppendTo[pageResults, r]; connFail = 0,
+            AppendTo[failedPages, p];
+            connFail = If[iDocPaperConnectionErrorQ[$iDocPaperLastError], connFail + 1, 0];
+            If[connFail >= 2,
+              Message[DocImportPaper::abort, connFail,
+                StringTake[$iDocPaperLastError, UpTo[300]]];
+              Throw[True, "DocPaperAbort"]]]],
+        {p, pages}];
+      False, "DocPaperAbort"];
+    If[TrueQ[aborted],
+      iDocPaperLog[True, "LLM サーバに接続できません: " <> StringTake[$iDocPaperLastError, UpTo[300]]];
+      Return[$Failed]];
     If[Length[failedPages] > 0,
       iDocPaperLog[True, "解析に失敗したページ: " <> ToString[failedPages]]];
     blocks = iDocPaperMergeAllPages[pageResults, cfg["TargetLanguage"]];
