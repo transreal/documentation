@@ -337,6 +337,15 @@ $iDocTagExcludeExport = {$iDocTagRoot, "excludeExport"};
 $iDocTagFigLabel = {$iDocTagRoot, "figLabel"};
 $iDocTagFigCaption = {$iDocTagRoot, "figCaption"};
 $iDocTagFigFullPage = {$iDocTagRoot, "figFullPage"}; (* True: LaTeX で独立ページ [p] の全ページ図 *)
+(* 図の翻訳 (2026-10-07): 図中の文字を翻訳先言語に置き換えた図を、テキストセルの翻訳と同じ
+   mode = "translated" / showTranslation で原語図 ↔ 翻訳図と切り替える。内容は BoxData なので
+   図清書と同じく Compress 文字列で TaggingRules に保持する。
+   figTranslationBoxes    : 翻訳版の図セル内容 (Compress 文字列)。原語図表示中に必須
+   figTranslationSrcBoxes : 原語版の図セル内容 (Compress 文字列)。翻訳図表示中に必須 (切替時に自動保存)
+   figCaptionTranslation  : 翻訳先言語のキャプション。エクスポート時に LLM 翻訳の代わりに使う *)
+$iDocTagFigTranslationBoxes = {$iDocTagRoot, "figTranslationBoxes"};
+$iDocTagFigTranslationSrcBoxes = {$iDocTagRoot, "figTranslationSrcBoxes"};
+$iDocTagFigCaptionTranslation = {$iDocTagRoot, "figCaptionTranslation"};
 $iDocTagCleanText = {$iDocTagRoot, "cleanText"};
 $iDocTagCleanMode = {$iDocTagRoot, "cleanMode"};
 $iDocTagRefSources = {$iDocTagRoot, "refSources"};
@@ -1082,6 +1091,17 @@ DocExpandIdea[nb_NotebookObject, cellIdx_Integer, opts:OptionsPattern[]] :=
     (* 非同期呼び出し直後にセル選択を復元: カーソルジャンプ防止 *)
     NBAccess`NBSelectCell[nb, cellIdx];
   ];
+(* 編集検出の比較 (2026-10-07): NBCellGetText は FrontEnd の InputText 形式 (名前付き文字は長い名前の形) を返すので、
+   書き込んだ文字列をそのまま保持する cleanText とは特殊文字を含むセルで一致しない。cleanText 側も
+   InputText 形式に正規化してから比べ、未編集のセルを編集済みと誤判定しないようにする。 *)
+iDocInputTextForm[s_String] :=
+  Module[{r},
+    r = Quiet[FrontEndExecute[FrontEnd`ExportPacket[Cell[s, "Text"], "InputText"]]];
+    If[MatchQ[r, {_String, ___}] && StringTrim[First[r]] =!= "", StringTrim[First[r]], StringTrim[s]]];
+iDocTextDiffersQ[current_String, clean_String] :=
+  current =!= clean && StringTrim[current] =!= StringTrim[clean] &&
+  StringTrim[current] =!= iDocInputTextForm[clean];
+
 DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
   Module[{currentText, mode, alternate, newMode, showTrans, transSrc,
           storedTranslation, cleanText, wasEdited, prevMode, prevShowTrans},
@@ -1099,6 +1119,12 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
       iDocToggleFigureClean[nb, cellIdx, mode];
       Return[]];
 
+    (* 図の翻訳セル (mode="translated" + figTranslationBoxes/figTranslationSrcBoxes):
+       原語図 ↔ 翻訳図。図はテキストではないため編集検出フローを経由せず専用処理する。 *)
+    If[mode === "translated" && iDocFigureTranslationCellQ[nb, cellIdx],
+      iDocToggleFigureTranslation[nb, cellIdx, TrueQ[showTrans]];
+      Return[]];
+
     (* 編集検出: cleanText と現在テキストを比較。
        cleanMode が現在のモードと一致する場合のみ編集ありと判定する。
        モードが変わっていれば cleanText は前のモードの残留値なので無視する。 *)
@@ -1109,7 +1135,7 @@ DocToggleView[nb_NotebookObject, cellIdx_Integer] :=
       currentMode = ToString[mode] <> ":" <> ToString[TrueQ[showTrans]];
       wasEdited = StringQ[cleanText] && StringQ[currentText] &&
         StringQ[cleanMode] && cleanMode === currentMode &&
-        currentText =!= cleanText];
+        iDocTextDiffersQ[currentText, cleanText]];
     prevMode = If[StringQ[mode], mode, ""];
     prevShowTrans = TrueQ[showTrans];
 
@@ -2124,8 +2150,15 @@ iDocShowAllAs[targetView_String] :=
                 "writeText" -> storedTranslation,
                 "saveTransSrc" -> If[StringQ[currentText], currentText, ""]|>]]
         ]];
+      (* translated モードの図の翻訳セル: Compress 内容の切替 (テキスト経路は通さない) *)
+      If[mode === "translated" && iDocFigureTranslationCellQ[nb, i],
+        Which[
+          targetView === "translation" && !TrueQ[showTrans],
+            AppendTo[plan, <|"idx" -> i, "action" -> "fig-trans-show"|>],
+          (targetView === "idea" || targetView === "paragraph") && TrueQ[showTrans],
+            AppendTo[plan, <|"idx" -> i, "action" -> "fig-trans-revert"|>]]];
       (* translated モード *)
-      If[mode === "translated",
+      If[mode === "translated" && !iDocFigureTranslationCellQ[nb, i],
         Which[
           targetView === "translation" && !TrueQ[showTrans],
             storedTranslation = NBAccess`NBCellGetTaggingRule[nb, i, $iDocTagTranslation];
@@ -2204,6 +2237,12 @@ iDocShowAllAs[targetView_String] :=
             NBAccess`NBInvalidateCellsCache[nb];
             NBAccess`NBCellWriteText[nb, idx, p["writeText"]];
             NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagCleanText, p["writeText"]],
+
+          act === "fig-trans-show",
+            iDocToggleFigureTranslation[nb, idx, False],
+
+          act === "fig-trans-revert",
+            iDocToggleFigureTranslation[nb, idx, True],
 
           act === "translated-show",
             NBAccess`NBCellSetTaggingRule[nb, idx,
@@ -2822,6 +2861,14 @@ iDocDeleteTranslateSelectedImpl[] :=
             If[StringQ[srcText] && StringTrim[srcText] =!= "",
               NBAccess`NBInvalidateCellsCache[nb];
               NBAccess`NBCellWriteText[nb, idx, srcText]]];
+          (* 図の翻訳セル: 翻訳図表示中なら原語図に戻し、図の翻訳タグもクリア *)
+          If[iDocFigureTranslationCellQ[nb, idx],
+            If[TrueQ[showTrans],
+              Module[{src = iDocGetCompressedTag[nb, idx, $iDocTagFigTranslationSrcBoxes]},
+                If[src =!= $Failed, iDocWriteCellContent[nb, idx, src]]]];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigTranslationBoxes, None];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigTranslationSrcBoxes, None];
+            NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagFigCaptionTranslation, None]];
           (* 翻訳タグをクリア *)
           NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagTranslation, None];
           NBAccess`NBCellSetTaggingRule[nb, idx, $iDocTagTranslationSrc, None];
@@ -4532,12 +4579,20 @@ iDocCellToExport[nb_NotebookObject, cellIdx_Integer, outDir_String,
       If[!StringQ[figLabel] || StringTrim[figLabel] === "",
         figLabel = "fig" <> ToString[imgCounter]];
       If[!StringQ[figCaption], figCaption = ""];
-      (* 翻訳モードならキャプションをターゲット言語に翻訳 *)
+      (* 翻訳モード: 保存済みの翻訳キャプション (figCaptionTranslation) があればそれを使い、
+         なければ LLM でターゲット言語に翻訳 *)
       If[figCaption =!= "" && exportLang =!= "source",
-        figCaption = iDocTranslateFigCaption[figCaption, exportLang]];
+        Module[{ct = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigCaptionTranslation]},
+          figCaption = If[StringQ[ct] && StringTrim[ct] =!= "", ct,
+            iDocTranslateFigCaption[figCaption, exportLang]]]];
       figEntry = Lookup[figTable, figLabel, None];
       Module[{imgFile, figOut, textPart = ""},
-        imgFile = iDocExportCellImage[nb, cellIdx, outDir, figLabel];
+        (* 翻訳モードで原語図を表示中なら、保存済みの翻訳版の図を書き出す *)
+        showTrans = NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagShowTranslation];
+        imgFile = If[exportLang =!= "source" && !TrueQ[showTrans] &&
+            iDocFigureTranslationCellQ[nb, cellIdx],
+          iDocExportTranslatedFigureImage[nb, cellIdx, outDir, figLabel],
+          iDocExportCellImage[nb, cellIdx, outDir, figLabel]];
         If[StringQ[imgFile],
           Module[{relPath = FileNameTake[imgFile], figNumStr},
             figNumStr = ToString[If[AssociationQ[figEntry],
@@ -4743,9 +4798,13 @@ iDocPostProcessLaTeXLists[text_String] :=
        「Missing character」や「Not two-byte family」になる
      - _ ^ # % & { } などが特殊文字として解釈され「Missing $ inserted」等になる
    ため、エクスポート時に以下を決定的に行う。
-     1. \cite{} \ref{} \figurename~\ref{} \label{} と既存の $...$ / \(...\) は保護
-     2. 和文(CJK)以外の連続部分を「数式らしいか」で判定し、数式なら
-        Unicode 記号を LaTeX 数式コマンドへ変換して $...$ で囲む
+     1. \cite{} \ref{} \figurename~\ref{} \label{} と既存の $...$ / \(...\) は保護し、URL は \url{} にする
+     2. 本文をトークンに分け、変数・式の部分 (英字 1 字の変数, ギリシャ文字, 上付き・下付き,
+        数学記号, 中身が式の括弧 (c, e) / (SSR)* / {0, 1}, 関数適用 Per(P) 等) だけを $...$ で囲み、
+        Unicode 記号を LaTeX 数式コマンドへ変換する (判定規則は iDocTeXFreeText)。
+        2026-10-07 改訂: 旧版は和文で区切った英数字の塊ごとに「1 字か = _ ^ を含むか」で判定して
+        いたため、R, L, S / (c, e) / c' / B - A / (SSR)* / Per(P) を取りこぼし、
+        σ(t) = {(鋭角; …)} のように和文をまたぐ式の括弧を壊していた
      3. 数式でない部分は特殊文字をエスケープし、× ° ± “ ” – … 等を置換
    ============================================================ *)
 
@@ -4787,7 +4846,7 @@ $iDocTeXMathSymbolMap = <|
   "\:211a" -> "\\mathbb{Q}", "\:2102" -> "\\mathbb{C}",
   "\:220e" -> "\\blacksquare ", "\:25a0" -> "\\blacksquare ", "\:25a1" -> "\\square ",
   "\:2220" -> "\\angle ", "\:00b1" -> "\\pm ", "\:2213" -> "\\mp ", "\:00b0" -> "^{\\circ}",
-  "\:2032" -> "'", "\:2033" -> "''", "\:2034" -> "'''", "\:221a" -> "\\sqrt ",
+  "\:2032" -> "'", "\:2033" -> "''", "\:2034" -> "'''", "\:221a" -> "\\sqrt ", "\:2113" -> "\\ell ",
   "\:221e" -> "\\infty ", "\:2200" -> "\\forall ", "\:2203" -> "\\exists ", "\:2205" -> "\\emptyset ",
   "\:2282" -> "\\subset ", "\:2286" -> "\\subseteq ", "\:2283" -> "\\supset ", "\:2287" -> "\\supseteq ",
   "\:222a" -> "\\cup ", "\:2229" -> "\\cap ", "\:2227" -> "\\wedge ", "\:2228" -> "\\vee ",
@@ -4819,8 +4878,34 @@ $iDocTeXTextSymbolMap = <|
   "\:00c9" -> "\\'E", "\:00df" -> "\\ss{}", "\:0142" -> "\\l{}", "\:0141" -> "\\L{}",
   "\:00b7" -> "$\\cdot$", "\:2032" -> "$'$"|>;
 
-(* 数式扱いの引き金となる ASCII 文字 *)
-$iDocTeXMathIndicatorChars = {"_", "^", "=", "<", ">", "+", "{"};
+(* 数式検出で演算子として扱う ASCII 文字 (\:2212 も演算子扱い) *)
+$iDocTeXASCIIOps = {"=", "+", "-", "*", "/", "<", ">", "|", "^", "_", "~", "!", "'"};
+
+(* 数式中で \mathrm 等として通す英字語 (英単語とみなさない) *)
+$iDocTeXMathWords = {"cos", "sin", "tan", "cot", "sec", "csc", "exp", "log", "ln",
+  "max", "min", "sup", "inf", "lim", "det", "dim", "gcd", "arg", "sinh", "cosh", "tanh",
+  "mod", "id", "deg", "ker", "tr", "sgn", "lcm", "cor", "supp", "diam", "dist", "card"};
+
+(* 大文字だけの語でも数式にしない略語 *)
+$iDocTeXAcronymStoplist = {"CA", "PCA", "AI", "CPU", "GPU", "PDF", "URL", "API", "LLM",
+  "DNA", "RNA", "USB", "OK"};
+
+(* 英文の機能語 (これを含む括弧は数式にしない) *)
+$iDocTeXEnglishStopwords = {"an", "the", "and", "or", "of", "to", "in", "on", "at", "by",
+  "for", "with", "from", "as", "is", "are", "be", "if", "then", "where", "when", "which",
+  "that", "this", "see", "also", "not", "all", "any", "each", "every", "some", "we", "it",
+  "its", "has", "have", "can", "may", "iff", "such", "than", "into", "over", "under", "only",
+  "cf", "eg", "ie", "etc", "resp"};
+
+(* 段落単位の文脈 (iDocLaTeXSanitizeText が Block で設定する)
+   $iDocTeXEnglishMode  : 段落に和文が無い (英文)。冠詞 a / I / 文頭の A を変数にしない
+   $iDocTeXVarLetters   : 段落内で単独の変数として現れる大文字 (BC, SSR 等の判定用)
+   $iDocTeXRIsVar       : R が単独の変数として使われている (R² を \mathbb{R}^2 にしない)
+   $iDocTeXConservative : 文献欄など。単独の英字 1 文字は演算子に隣接するときだけ数式 *)
+$iDocTeXEnglishMode = False;
+$iDocTeXVarLetters = {};
+$iDocTeXRIsVar = False;
+$iDocTeXConservative = False;
 
 (* CJK 文字判定 (和文・全角記号は LaTeX 上そのまま通す) *)
 iDocTeXCJKCodeQ[c_Integer] :=
@@ -4850,15 +4935,70 @@ iDocTeXMathCharQ[ch_String] :=
   (KeyExistsQ[$iDocTeXMathSymbolMap, ch] &&
     !MemberQ[{"\:2026", "\:2013", "\:2014", "\:2018", "\:2019", "\:201c", "\:201d", "\:00a0", "\:2212"}, ch]);
 
-(* Latin 部分が数式かどうかの判定 *)
-iDocTeXMathRunQ[run_String] :=
-  Module[{s = StringTrim[run]},
-    If[s === "", Return[False]];
-    (* 1 文字の英字 (変数) は数式扱い *)
-    If[StringMatchQ[s, RegularExpression["[A-Za-z]"]], Return[True]];
-    If[AnyTrue[Characters[s], iDocTeXMathCharQ], Return[True]];
-    If[AnyTrue[$iDocTeXMathIndicatorChars, StringContainsQ[s, #] &], Return[True]];
-    False];
+(* 数式検出用の文字クラス *)
+iDocTeXCharClass[ch_String] :=
+  Module[{c = First[ToCharacterCode[ch]]},
+    Which[
+      iDocTeXCJKCodeQ[c], "cjk",
+      (65 <= c <= 90) || (97 <= c <= 122), "letter",
+      48 <= c <= 57, "digit",
+      c == 32 || c == 9 || c == 10 || c == 13, "space",
+      (192 <= c <= 591) && c != 215 && c != 247, "xletter",
+      KeyExistsQ[$iDocTeXSubscriptMap, ch], "sub",
+      KeyExistsQ[$iDocTeXSuperscriptMap, ch], "sup",
+      (913 <= c <= 937) || (945 <= c <= 969) || c == 977 || c == 981 || c == 1013, "greek",
+      ch === "(" || ch === "[" || ch === "{", "open",
+      ch === ")" || ch === "]" || ch === "}", "close",
+      MemberQ[$iDocTeXASCIIOps, ch] || c == 8722, "op",
+      ch === "," || ch === ";" || ch === ":" || ch === ".", "punct",
+      ch === "#" || ch === "%" || ch === "&", "nchar",
+      c == 8230 || c == 8943 || c == 8942, "ellipsis",
+      iDocTeXMathCharQ[ch], "sym",
+      True, "other"]];
+
+(* 自由テキストを {種別, 文字列} のトークン列にする。
+   種別: cjk space word num numword sub sup greek open close op punct nchar ellipsis sym other
+   word は英字で始まる英数字列 (所有格・短縮形 Bruijn's は 1 語)、numword は 2D / 1st / 2PCA のような
+   数字始まりの語 (ただし 2x のような「数字 + 小文字 1 字」は num と word に分ける)。 *)
+iDocTeXTokenize[s_String] :=
+  Module[{chars = Characters[s], cls, n, i = 1, j, k, wordCharQ},
+    n = Length[chars];
+    cls = iDocTeXCharClass /@ chars;
+    wordCharQ[x_] := x === "letter" || x === "xletter" || x === "digit";
+    First[Reap[
+      While[i <= n,
+        Switch[cls[[i]],
+          "cjk" | "space" | "sub" | "sup",
+            j = i; While[j < n && cls[[j + 1]] === cls[[i]], j++];
+            Sow[{cls[[i]], StringJoin[chars[[i ;; j]]]}]; i = j + 1,
+          "letter" | "xletter",
+            j = i; While[j < n && wordCharQ[cls[[j + 1]]], j++];
+            (* 所有格・短縮形 (Bruijn's, don't) は 1 語。PC'A' のような点名のプライムは分ける *)
+            While[j > i && j + 2 <= n && chars[[j + 1]] === "'" && LowerCaseQ[chars[[j + 2]]] &&
+                !UpperCaseQ[StringJoin[Select[chars[[i ;; j]], LetterQ]]],
+              j += 2; While[j < n && wordCharQ[cls[[j + 1]]], j++]];
+            Sow[{"word", StringJoin[chars[[i ;; j]]]}]; i = j + 1,
+          "digit",
+            j = i; While[j < n && cls[[j + 1]] === "digit", j++];
+            If[j + 2 <= n && chars[[j + 1]] === "." && cls[[j + 2]] === "digit",
+              j++; While[j < n && cls[[j + 1]] === "digit", j++]];
+            k = j;
+            If[j < n && cls[[j + 1]] === "letter",
+              k = j + 1;
+              While[k < n && MemberQ[{"letter", "digit"}, cls[[k + 1]]], k++];
+              (* 数字 + 英字 1 字が式の一部 (4N_m, ℤ/10ℤ の 10Z) や 2cos なら分ける *)
+              If[MemberQ[$iDocTeXMathFunctionNames, StringJoin[chars[[j + 1 ;; k]]]] ||
+                 k == j + 1 &&
+                  (LowerCaseQ[chars[[k]]] ||
+                   (i > 1 && MemberQ[{"/", "^", "_", "=", "+", "-", "*", "\:00d7", "\:00b7"}, chars[[i - 1]]]) ||
+                   (k < n && (MemberQ[{"_", "^", "(", "'"}, chars[[k + 1]]] ||
+                     MemberQ[{"sub", "sup"}, cls[[k + 1]]]))),
+                k = j]];
+            If[k > j,
+              Sow[{"numword", StringJoin[chars[[i ;; k]]]}]; i = k + 1,
+              Sow[{"num", StringJoin[chars[[i ;; j]]]}]; i = j + 1],
+          _,
+            Sow[{cls[[i]], chars[[i]]}]; i++]]][[2]], {}]];
 
 (* 数式モード文字列内の Unicode 記号のみを LaTeX に変換 (既存 $...$ の中身などに使う) *)
 iDocTeXConvertMathUnicode[s_String] :=
@@ -4883,22 +5023,50 @@ iDocTeXConvertMathUnicode[s_String] :=
           AppendTo[out, ch]; i++]];
     StringJoin[out]];
 
-(* 数式と判定した Latin 部分を LaTeX 数式へ変換して $...$ で囲む *)
+(* 数式と判定した部分を LaTeX 数式へ変換して $...$ で囲む *)
 $iDocTeXMathFunctionNames = {"cos", "sin", "tan", "cot", "sec", "csc", "exp", "log", "ln",
   "max", "min", "sup", "inf", "lim", "det", "dim", "gcd", "arg", "sinh", "cosh", "tanh"};
 
+(* chars[[open]] の "(" に対応する ")" の位置 (無ければ 0) *)
+iDocTeXMatchingParen[chars_List, open_Integer] :=
+  Module[{depth = 0, k = open, n = Length[chars]},
+    While[k <= n,
+      Switch[chars[[k]], "(", depth++, ")", depth--, _, Null];
+      If[depth == 0, Return[k, Module]];
+      k++];
+    0];
+
 iDocTeXMathRun[run_String] :=
-  Module[{chars = Characters[run], out = {}, i = 1, n, ch, buf, word, prev, braceStack = {},
+  Module[{chars = Characters[run], out = {}, i = 1, j, n, ch, buf, word, prev, braceStack = {},
           lastNonSpace = ""},
     n = Length[chars];
     While[i <= n,
       ch = chars[[i]];
       Which[
+        (* 数式中の短い和文ラベル ((κ = 鋭角) 等) は \text{} *)
+        iDocTeXCJKCodeQ[First[ToCharacterCode[ch]]],
+          buf = {};
+          While[i <= n && iDocTeXCJKCodeQ[First[ToCharacterCode[chars[[i]]]]],
+            AppendTo[buf, chars[[i]]]; i++];
+          AppendTo[out, "\\text{" <> StringJoin[buf] <> "}"]; lastNonSpace = "}",
+        (* _( ... ) / ^( ... ) は括弧ごと添字にする (t⁰_(κ,+) → t^{0}_{(\kappa,+)}) *)
+        (ch === "_" || ch === "^") && i < n && chars[[i + 1]] === "(" &&
+          (j = iDocTeXMatchingParen[chars, i + 1]) > 0,
+          AppendTo[out, ch <> "{" <>
+            StringTake[iDocTeXMathRun[StringJoin[chars[[i + 1 ;; j]]]], {2, -2}] <> "}"];
+          lastNonSpace = "}"; i = j + 1,
         (* _ / ^ の直後の 1 文字は単独の添字にする (C_cN_c → C_c N_c) *)
         (ch === "_" || ch === "^") && i < n &&
           StringMatchQ[chars[[i + 1]], RegularExpression["[A-Za-z0-9]"]],
           AppendTo[out, ch <> chars[[i + 1]]];
           lastNonSpace = chars[[i + 1]]; i += 2,
+        (* 後置の * (t* / S* / (SSR)* 等) は ^{*}。a * b や a*b のような二項の * はそのまま *)
+        ch === "*" && i > 1 &&
+          (StringMatchQ[chars[[i - 1]], RegularExpression["[A-Za-z0-9)\\]}']"]] ||
+           MemberQ[{"sub", "sup", "greek"}, iDocTeXCharClass[chars[[i - 1]]]]) &&
+          (i == n || !StringMatchQ[chars[[i + 1]],
+            RegularExpression["[A-Za-z0-9(\\[{\\\\\:0391-\:03c9]"]]),
+          AppendTo[out, "^{*}"]; lastNonSpace = "}"; i++,
         (* ASCII 英字で始まる識別子 (英字+数字: SR8, PCA など) *)
         StringMatchQ[ch, RegularExpression["[A-Za-z]"]],
           buf = {};
@@ -4910,10 +5078,21 @@ iDocTeXMathRun[run_String] :=
               StringLength[word] == 1,
                 Which[
                   word === "Z", "\\mathbb{Z}",
-                  word === "R" && i <= n && (chars[[i]] === "\:00b2" || chars[[i]] === "\:1d48"), "\\mathbb{R}",
+                  word === "R" && !TrueQ[$iDocTeXRIsVar] && i <= n &&
+                    (chars[[i]] === "\:00b2" || chars[[i]] === "\:1d48"), "\\mathbb{R}",
                   True, word],
               word === "mod", "\\bmod ",
               MemberQ[$iDocTeXMathFunctionNames, word], "\\" <> word <> " ",
+              (* 段落内の変数の文字だけからなる 3 字以下の語は積 (pq, kj, mN) として斜体 *)
+              StringLength[word] <= 3 && StringMatchQ[word, RegularExpression["[A-Za-z]+"]] &&
+                !MemberQ[$iDocTeXMathWords, word] && !(i <= n && chars[[i]] === "(") &&
+                SubsetQ[$iDocTeXVarLetters, Characters[word]],
+                word,
+              (* 大文字だけの語は記号の並び (BC, SSR) として斜体。
+                 関数名 DOWN(c) や略語は従来どおり立体 *)
+              StringMatchQ[word, RegularExpression["[A-Z]+"]] &&
+                !MemberQ[$iDocTeXAcronymStoplist, word] && !(i <= n && chars[[i]] === "("),
+                word,
               True, "\\mathrm{" <> word <> "}"]];
           lastNonSpace = word,
         (* 下付き Unicode 列 *)
@@ -4971,58 +5150,351 @@ iDocTeXTextRun[run_String] :=
         True, ch]],
     Characters[run]]];
 
-(* 保護トークンを含まない自由テキストの変換 *)
+(* 保護トークンを含まない自由テキストの変換。
+   和文と英数字が混ざった本文から、変数・式の部分だけを $...$ にする。
+   1. トークン化 (iDocTeXTokenize) し、各トークンに役割を付ける
+        M = 数式 (英字 1 字の変数, ギリシャ文字, 上付き/下付き, ∈ → 等の記号)
+        T = 地の文 (和文, 2 字以上の英単語, 2D/1st, 引用符等)
+        N = 中立 (空白, 数字, 句読点, 括弧, ASCII 演算子)
+      ただし (a)〜(d) のような列挙ラベル、K. Imai / e.g. の頭文字、英文の冠詞 a / I は T。
+   2. 括弧を対応付け、中身が数式の括弧 ((c, e), {0, 1}, (SSR)*, (κ = 鋭角)) を数式扱いにし、
+      その中の短い漢字・カタカナ語 (鋭角 等) は \text{} のラベルとして式に含める。
+   3. 2 字以上の英字語は、式の一部と分かるときだけ M に昇格する
+        関数適用 Per(P)、添字 cor_Δ、記号に密着 |AB| ∠BAC、関係演算子の相手 SR8 = (...)、
+        段落内の単独変数の文字だけからなる大文字語 (BC, SSR)、数式括弧の中の非英単語。
+   4. T を含まない区間ごとに、対応の取れない括弧・「式 (注記)」の空白・「変数 数字」の空白で切り、
+      両端の空白・句読点・演算子を外して、M を含む区間を iDocTeXMathRun で $...$ にする。 *)
 iDocTeXFreeText[text_String] :=
-  Module[{chars = Characters[text], out = {}, i = 1, n, buf, isCJK, isCJKAt, run, lead, core, trail},
-    n = Length[chars];
-    isCJK[ch_] := iDocTeXCJKCodeQ[First[ToCharacterCode[ch]]];
-    (* 和文括弧の代わりに使われた半角括弧 ( 直後が和文 / ) 直前が和文 ) は和文側に含める *)
-    isCJKAt[k_] := isCJK[chars[[k]]] ||
-      (chars[[k]] === "(" && k < n && isCJK[chars[[k + 1]]]) ||
-      (chars[[k]] === ")" && k > 1 && isCJK[chars[[k - 1]]]);
-    While[i <= n,
-      If[isCJKAt[i],
-        buf = {};
-        While[i <= n && isCJKAt[i], AppendTo[buf, chars[[i]]]; i++];
-        AppendTo[out, StringJoin[buf]],
-        buf = {};
-        While[i <= n && !isCJKAt[i], AppendTo[buf, chars[[i]]]; i++];
-        run = StringJoin[buf];
-        lead = StringCases[run, RegularExpression["^\\s*"]];
-        trail = StringCases[run, RegularExpression["\\s*$"]];
-        lead = If[lead === {}, "", First[lead]];
-        trail = If[trail === {}, "", First[trail]];
-        core = StringTrim[run];
-        If[core === "",
-          AppendTo[out, run],
-          If[iDocTeXMathRunQ[core],
-            (* 和文括弧の一部と思われる不釣り合いな ( ) は数式の外に出す *)
-            Module[{pre = "", post = "", nOpen, nClose},
-              nOpen = StringCount[core, "("]; nClose = StringCount[core, ")"];
-              While[StringStartsQ[core, "("] && nOpen > nClose,
-                pre = pre <> "("; core = StringDrop[core, 1]; nOpen--];
-              While[StringEndsQ[core, ")"] && nClose > nOpen,
-                post = ")" <> post; core = StringDrop[core, -1]; nClose--];
-              core = StringTrim[core];
-              AppendTo[out, lead <> pre <>
-                If[core === "", "", If[iDocTeXMathRunQ[core], iDocTeXMathRun[core], iDocTeXTextRun[core]]] <>
-                post <> trail]],
-            AppendTo[out, lead <> iDocTeXTextRun[core] <> trail]]]]];
-    StringJoin[out]];
+  Module[{toks, nt, typ, str, role, match, encl, stack, prevNS, nextNS, labelQ, asciiWordQ,
+          englishWordQ, stopwordQ, relQ, mqTok, opAdjQ, gm, groupMathyQ, inMathyQ, promoteQ,
+          numwordPromoteQ, singleQ, gluedQ, atomEndQ, r, runs, renderRun},
+    toks = iDocTeXTokenize[text];
+    nt = Length[toks];
+    If[nt == 0, Return[""]];
+    typ = toks[[All, 1]]; str = toks[[All, 2]];
+
+    prevNS[i_] := Module[{j = i - 1}, While[j >= 1 && typ[[j]] === "space", j--]; j];
+    nextNS[i_] := Module[{j = i + 1}, While[j <= nt && typ[[j]] === "space", j++];
+      If[j > nt, 0, j]];
+    singleQ[i_] := typ[[i]] === "word" && StringMatchQ[str[[i]], RegularExpression["[A-Za-z]"]];
+    asciiWordQ[i_] := typ[[i]] === "word" && StringMatchQ[str[[i]], RegularExpression["[A-Za-z][A-Za-z0-9]+"]];
+    (* 英単語らしい語: 小文字だけの 2 字以上 (数式語・添字/引数付きを除く)、または非 ASCII/所有格 *)
+    englishWordQ[i_] := typ[[i]] === "word" && StringLength[str[[i]]] >= 2 &&
+      (!asciiWordQ[i] ||
+        (StringMatchQ[str[[i]], RegularExpression["[a-z]+"]] && !MemberQ[$iDocTeXMathWords, str[[i]]] &&
+          !(i < nt && (MemberQ[{"_", "^", "("}, str[[i + 1]]] ||
+            MemberQ[{"sub", "sup"}, typ[[i + 1]]]))));
+    (* 英文の機能語 (これを含む括弧は数式にしない) *)
+    stopwordQ[i_] := typ[[i]] === "word" && StringLength[str[[i]]] >= 2 &&
+      MemberQ[$iDocTeXEnglishStopwords, ToLowerCase[str[[i]]]];
+    (* 関係演算子 (= < > と ∈ → ≤ 等の記号) *)
+    relQ[i_] := (typ[[i]] === "op" && MemberQ[{"=", "<", ">"}, str[[i]]]) || typ[[i]] === "sym";
+    (* 式の一部とみなせるトークン (後置の ' * は直前に密着したものをたどる) *)
+    mqTok[x_] := x > 0 && (role[[x]] === "M" || typ[[x]] === "num" || typ[[x]] === "close" ||
+      (MemberQ[{"'", "*"}, str[[x]]] && x > 1 && typ[[x - 1]] =!= "space" && mqTok[x - 1]));
+    (* 短い漢字・カタカナ語 (数式括弧の中のラベル) *)
+    labelQ[i_] := typ[[i]] === "cjk" && StringLength[str[[i]]] <= 8 &&
+      AllTrue[ToCharacterCode[str[[i]]],
+        (19968 <= # <= 40959) || (13312 <= # <= 19903) || (12448 <= # <= 12543) ||
+        (63744 <= # <= 64255) || # == 12293 &];
+    (* 左右の非空白トークンが演算子・数式記号 *)
+    opAdjQ[i_] := AnyTrue[{prevNS[i], nextNS[i]},
+      # > 0 && ((typ[[#]] === "op" && str[[#]] =!= "'") || typ[[#]] === "sym") &];
+
+    (* - _ . / で 2 字以上の語に密着している (ファイル名・複合語 deg4-DB, L-system, cert_SSSR)。
+       英字 1 字には _ を使わない (C_cN_c の C は添字付きの変数) *)
+    gluedQ[i_, seps_:{"-", "_", ".", "/"}] := Or[
+      i > 2 && MemberQ[seps, str[[i - 1]]] &&
+        MemberQ[{"word", "numword"}, typ[[i - 2]]] && StringLength[str[[i - 2]]] >= 2,
+      i + 2 <= nt && MemberQ[seps, str[[i + 1]]] &&
+        MemberQ[{"word", "numword"}, typ[[i + 2]]] && StringLength[str[[i + 2]]] >= 2];
+
+    (* --- 1. 基本の役割 --- *)
+    role = Table[
+      Switch[typ[[i]],
+        "word", If[singleQ[i] && !gluedQ[i, {"-", ".", "/"}], "M", "T"],
+        "greek" | "sub" | "sup" | "sym", "M",
+        "cjk" | "numword" | "other", "T",
+        _, "N"],
+      {i, nt}];
+
+    (* 和文の語に密着した数 (1類, 4タイル) は地の文。ただし x = 4個 のように関係演算子の後と、
+       句読点・括弧 (φ + 1、) の前は式のまま *)
+    Do[
+      If[typ[[i]] === "num" && i < nt && typ[[i + 1]] === "cjk" &&
+         !(12288 <= First[ToCharacterCode[str[[i + 1]]]] <= 12351) &&
+         !(65280 <= First[ToCharacterCode[str[[i + 1]]]] <= 65519) &&
+         !(prevNS[i] > 0 && relQ[prevNS[i]]),
+        role[[i]] = "T"],
+      {i, nt}];
+
+    (* 見出しの番号 (規則拡張 I:) *)
+    Do[If[str[[i]] === "I" && singleQ[i] && i < nt && str[[i + 1]] === ":", role[[i]] = "T"], {i, nt}];
+
+    (* 和文や括弧・読点に挟まれた単独の符号 (状態 *, +, - / 正 (+) と負 (-)) は記号として数式 *)
+    Do[
+      If[typ[[i]] === "op" && MemberQ[{"+", "-", "*", "\:2212"}, str[[i]]],
+        Module[{p = prevNS[i], q = nextNS[i]},
+          If[p > 0 && q > 0 &&
+             (typ[[p]] === "cjk" || typ[[p]] === "open" || str[[p]] === ",") &&
+             (typ[[q]] === "cjk" || typ[[q]] === "close" || str[[q]] === ","),
+            role[[i]] = "M"]]],
+      {i, nt}];
+
+    (* 頭文字・略語: e.g. / i.e. / K. Imai / Imai, K. *)
+    Do[
+      If[singleQ[i] && i < nt && str[[i + 1]] === ".",
+        Which[
+          i + 3 <= nt && singleQ[i + 2] && str[[i + 3]] === ".",
+            role[[i]] = "T"; role[[i + 2]] = "T",
+          UpperCaseQ[str[[i]]] &&
+            ((i + 3 <= nt && typ[[i + 2]] === "space" && typ[[i + 3]] === "word" &&
+               StringLength[str[[i + 3]]] >= 2 && UpperCaseQ[StringTake[str[[i + 3]], 1]]) ||
+             (i + 2 <= nt && (str[[i + 2]] === "-" || singleQ[i + 2])) ||
+             (prevNS[i] >= 2 && str[[prevNS[i]]] === "," && asciiWordQ[prevNS[prevNS[i]]] &&
+               UpperCaseQ[StringTake[str[[prevNS[prevNS[i]]]], 1]])),
+            role[[i]] = "T"]],
+      {i, nt}];
+
+    (* 英文の冠詞 (a tiling, 文頭の A turtle) と、保守モードの英字 1 字 *)
+    If[TrueQ[$iDocTeXEnglishMode] || TrueQ[$iDocTeXConservative],
+      Do[
+        If[singleQ[i] && role[[i]] === "M" && !opAdjQ[i],
+          Which[
+            TrueQ[$iDocTeXConservative], role[[i]] = "T",
+            str[[i]] === "a" && i < nt && typ[[i + 1]] === "space" &&
+              nextNS[i] > 0 && typ[[nextNS[i]]] === "word",
+              role[[i]] = "T",
+            str[[i]] === "A" &&
+              (prevNS[i] == 0 || MemberQ[{".", ":", "!", "?"}, str[[prevNS[i]]]]) &&
+              nextNS[i] > 0 && typ[[nextNS[i]]] === "word" &&
+              LowerCaseQ[StringTake[str[[nextNS[i]]], 1]],
+              role[[i]] = "T"]],
+        {i, nt}]];
+
+    (* --- 2. 括弧の対応 (encl = 直近の外側の開き括弧) --- *)
+    match = ConstantArray[0, nt]; encl = ConstantArray[0, nt]; stack = {};
+    Do[
+      encl[[i]] = If[stack === {}, 0, Last[stack]];
+      Which[
+        typ[[i]] === "open", AppendTo[stack, i],
+        typ[[i]] === "close" && stack =!= {} &&
+          MemberQ[{{"(", ")"}, {"[", "]"}, {"{", "}"}}, {str[[Last[stack]]], str[[i]]}],
+          match[[Last[stack]]] = i; match[[i]] = Last[stack]; stack = Most[stack]],
+      {i, nt}];
+
+    (* 列挙ラベル (a) (A) (ii) (3): 直前が語や式でなく、直後に * ^ ' 添字や関係演算子が続かないもの *)
+    Do[
+      If[typ[[i]] === "open" && str[[i]] === "(" && match[[i]] == i + 2 &&
+         (singleQ[i + 1] || typ[[i + 1]] === "num" ||
+          MemberQ[{"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}, str[[i + 1]]]) &&
+         (i == 1 || MemberQ[{"space", "cjk", "punct", "open", "other"}, typ[[i - 1]]]) &&
+         (i + 2 == nt || !(MemberQ[{"*", "^", "_", "'"}, str[[i + 3]]] ||
+           MemberQ[{"sub", "sup", "open"}, typ[[i + 3]]])) &&
+         !(UpperCaseQ[str[[i + 1]]] && nextNS[i + 2] > 0 && relQ[nextNS[i + 2]]),
+        role[[i]] = "T"; role[[i + 1]] = "T"; role[[i + 2]] = "T"],
+      {i, nt}];
+
+    (* 中身が数式の括弧: 変数等を含み (または後置 * ^ ' 添字付き、または数と記号だけの {}) 、
+       和文はラベルだけ、英単語を含まない。
+       直後に括弧が続く和文 (「テール (+ | → +), 中央 (...)」のテール) は後続の式の名前なので、
+       それを含む括弧は地の文とみなす *)
+    groupMathyQ[o_] := Module[{m = match[[o]], content, postfixed, subsup},
+      content = Range[o + 1, m - 1];
+      postfixed = m < nt && (MemberQ[{"*", "^", "'"}, str[[m + 1]]] || MemberQ[{"sub", "sup"}, typ[[m + 1]]]);
+      (* 添字・指数の {} (D_{2mM+2}, S^{kj}) *)
+      subsup = o > 1 && MemberQ[{"_", "^"}, str[[o - 1]]];
+      role[[o]] =!= "T" &&
+      AllTrue[content, typ[[#]] =!= "cjk" ||
+        (labelQ[#] && !(nextNS[#] > 0 && typ[[nextNS[#]]] === "open")) &] &&
+      (* 英単語は、機能語でなく関係記号を伴う (slot ↦ slot + 2 mod 4) か、
+         添字の中か、後置記号付きの 1 語 ((pq)⁺) のときだけ許す *)
+      NoneTrue[content, stopwordQ] &&
+      (NoneTrue[content, englishWordQ] || AnyTrue[content, relQ] || subsup ||
+       (postfixed && Length[content] == 1)) &&
+      (AnyTrue[content, role[[#]] === "M" &] || postfixed || subsup ||
+       (str[[o]] === "{" && content =!= {} &&
+         AllTrue[content, role[[#]] =!= "T" || labelQ[#] &]))];
+    gm = Table[typ[[i]] === "open" && match[[i]] > i && groupMathyQ[i], {i, nt}];
+    (* 数式に密着した括弧 ((SR)³(SSR) の (SSR)) や、関係演算子で数式と結ばれた括弧
+       ((SSR)(SSSSR) = (SSRSSSSR)* の左辺) も、中身が英単語・和文を含まなければ数式扱い *)
+    Do[
+      Do[
+        If[typ[[o]] === "open" && match[[o]] > o && !gm[[o]] && role[[o]] =!= "T" &&
+           NoneTrue[Range[o + 1, match[[o]] - 1],
+             typ[[#]] === "cjk" || englishWordQ[#] || MemberQ[{"numword", "other"}, typ[[#]]] &],
+          Module[{c = match[[o]], mq, pn, nn},
+            mq[x_] := x > 0 && (role[[x]] === "M" || (typ[[x]] === "open" && gm[[x]]) ||
+              (typ[[x]] === "close" && gm[[match[[x]]]]) ||
+              (MemberQ[{"'", "*"}, str[[x]]] && x > 1 && typ[[x - 1]] =!= "space" && mq[x - 1]));
+            pn = prevNS[o]; nn = nextNS[c];
+            If[(o > 1 && mq[o - 1] && typ[[o - 1]] =!= "open") ||
+               (c < nt && mq[c + 1] && typ[[c + 1]] =!= "close") ||
+               (nn > 0 && relQ[nn] && mq[nextNS[nn]]) ||
+               (pn > 0 && relQ[pn] && mq[prevNS[pn]]),
+              gm[[o]] = True]]],
+        {o, nt}],
+      {2}];
+    inMathyQ[i_] := Module[{o = encl[[i]]},
+      While[o > 0 && !gm[[o]], o = encl[[o]]]; o > 0];
+    Do[
+      Which[
+        gm[[i]], role[[i]] = "M"; role[[match[[i]]]] = "M",
+        labelQ[i] && inMathyQ[i], role[[i]] = "M"],
+      {i, nt}];
+
+    (* --- 3. 2 字以上の英字語の昇格 --- *)
+    promoteQ[i_] := Module[{pn = prevNS[i], nn = nextNS[i]},
+      Or[
+        (* 関数適用 Per(P), cos(2πj/5), lcm(3, 4), inp[1] = X *)
+        i < nt && MemberQ[{"(", "["}, str[[i + 1]]] && match[[i + 1]] > 0 &&
+          (gm[[i + 1]] || MemberQ[$iDocTeXMathWords, str[[i]]] ||
+           (r = nextNS[match[[i + 1]]]; r > 0 && relQ[r])),
+        (* 添字・指数 cor_Δ, x^2 *)
+        i < nt && (MemberQ[{"sub", "sup"}, typ[[i + 1]]] || str[[i + 1]] === "^" ||
+          (str[[i + 1]] === "_" && i + 2 <= nt &&
+            (MemberQ[{"greek", "sub", "num"}, typ[[i + 2]]] || str[[i + 2]] === "{" || singleQ[i + 2]))),
+        (* x_max の max *)
+        i > 2 && MemberQ[{"_", "^"}, str[[i - 1]]] && role[[i - 2]] === "M",
+        (* 記号に密着 |AB|, ∠BAC, 後置 * *)
+        (i > 1 && (str[[i - 1]] === "|" || MemberQ[{"greek", "sym"}, typ[[i - 1]]])) ||
+        (i < nt && (str[[i + 1]] === "|" || MemberQ[{"greek", "sym"}, typ[[i + 1]]])),
+        i < nt && str[[i + 1]] === "*" &&
+          (i + 1 == nt || !MemberQ[{"word", "num", "greek", "open"}, typ[[i + 2]]]),
+        (* プライム付きの短い語 (辺 pp') *)
+        StringLength[str[[i]]] <= 3 && i < nt && str[[i + 1]] === "'" &&
+          (i + 1 == nt || !MemberQ[{"word", "xletter"}, typ[[i + 2]]]),
+        (* 関係演算子の相手 SR8 = (...), 420 = lcm(...) *)
+        nn > 0 && relQ[nn] &&
+          (r = nextNS[nn]; r > 0 && (role[[r]] === "M" || typ[[r]] === "num" || str[[r]] === "|")),
+        pn > 0 && relQ[pn] && mqTok[prevNS[pn]],
+        (* 数式関数名 cos θ, log 2, sin 36° *)
+        MemberQ[$iDocTeXMathFunctionNames, str[[i]]] && nn > 0 &&
+          (role[[nn]] === "M" || str[[nn]] === "(" ||
+           (typ[[nn]] === "num" &&
+             !MemberQ[{"max", "min", "sup", "inf", "arg", "dim", "det", "lim"}, str[[i]]])),
+        (* 二項の mod (Σk_i mod 5) *)
+        str[[i]] === "mod" && pn > 0 && nn > 0 &&
+          (role[[pn]] === "M" || typ[[pn]] === "num") && (role[[nn]] === "M" || typ[[nn]] === "num"),
+        (* 段落内の単独変数の文字だけからなる大文字語 BC, SSR (ファイル名の一部は除く) *)
+        StringMatchQ[str[[i]], RegularExpression["[A-Z]{2,}"]] && !gluedQ[i] &&
+          !MemberQ[$iDocTeXAcronymStoplist, str[[i]]] &&
+          SubsetQ[$iDocTeXVarLetters, Characters[str[[i]]]],
+        (* 数式括弧の中の語 (機能語以外) *)
+        inMathyQ[i] && !stopwordQ[i]]];
+    (* 2mN, 2P のような数字始まりの語は、数式括弧の中か二項・関係演算子で式とつながるときだけ *)
+    numwordPromoteQ[i_] := Module[{pn = prevNS[i], nn = nextNS[i]},
+      inMathyQ[i] ||
+      (nn > 0 && (relQ[nn] || MemberQ[{"+", "-", "*", "/"}, str[[nn]]]) &&
+        (r = nextNS[nn]; r > 0 && (role[[r]] === "M" || typ[[r]] === "num"))) ||
+      (pn > 0 && (relQ[pn] || MemberQ[{"+", "-", "*", "/"}, str[[pn]]]) && mqTok[prevNS[pn]])];
+    Do[
+      Do[
+        If[role[[i]] === "T" &&
+           ((asciiWordQ[i] && promoteQ[i]) || (typ[[i]] === "numword" && numwordPromoteQ[i])),
+          role[[i]] = "M"],
+        {i, nt}],
+      {2}];
+
+    (* --- 4. 区間ごとに数式/地の文を決めて出力 --- *)
+    (* 式の末尾になりうるトークン (演算子記号 → ∈ × 等は除く) *)
+    atomEndQ[i_] := MemberQ[{"word", "greek", "sub", "sup", "close", "num"}, typ[[i]]] ||
+      (typ[[i]] === "sym" && MemberQ[{"\:2124", "\:211d", "\:2115", "\:211a", "\:2102",
+        "\:221e", "\:2205", "\:2032", "\:2033", "\:2034", "\:2113"}, str[[i]]]) ||
+      (MemberQ[{"*", "'"}, str[[i]]] && i > 1 && typ[[i - 1]] =!= "space");
+    renderRun[run_List] := Module[{cut = {}, pieces, out = {}},
+      (* 切れ目: 「式 (注記)」の空白 (括弧の後に演算子が続く U S (c, e) = ... は切らない)、
+         「変数 数字」「数字 変数」の空白 *)
+      Do[
+        If[typ[[s]] === "space" && s > First[run] && s < Last[run],
+          Module[{a = s - 1, b = s + 1},
+            If[(str[[b]] === "(" && atomEndQ[a] &&
+                 !(match[[b]] > 0 && nextNS[match[[b]]] > 0 &&
+                   (typ[[nextNS[match[[b]]]]] === "sym" ||
+                    MemberQ[{"=", "<", ">", "+", "-", "|"}, str[[nextNS[match[[b]]]]]]))) ||
+               (typ[[a]] === "num" && (singleQ[b] || typ[[b]] === "greek")) ||
+               ((singleQ[a] || MemberQ[{"greek", "sub", "sup", "close"}, typ[[a]]]) &&
+                 typ[[b]] === "num"),
+              AppendTo[cut, s]]]],
+        {s, run}];
+      pieces = Split[run, !MemberQ[cut, #1] && !MemberQ[cut, #2] &];
+      (* 区間外と対応する括弧は地の文に出して区間を分ける *)
+      pieces = Flatten[Map[
+        Function[pc, Split[pc,
+          Function[{x, y},
+            !(MemberQ[{"open", "close"}, typ[[x]]] && !MemberQ[pc, match[[x]]]) &&
+            !(MemberQ[{"open", "close"}, typ[[y]]] && !MemberQ[pc, match[[y]]])]]],
+        pieces], 1];
+      Do[
+        Module[{seg = pc, lead = {}, trail = {}, bars, keepQ},
+          bars[] := Count[str[[seg]], "|"];
+          (* 両端から外すもの: 空白・句読点・(後置以外の) 演算子・対応外の括弧。
+             省略記号は読点の後 (x₁, x₂, …) / 前 (…, xₙ) なら残す *)
+          keepQ[i_, side_] := Which[
+            MemberQ[{"space", "punct"}, typ[[i]]], False,
+            typ[[i]] === "ellipsis",
+              If[side === "trail",
+                MemberQ[seg, prevNS[i]] && str[[prevNS[i]]] === ",",
+                MemberQ[seg, nextNS[i]] && str[[nextNS[i]]] === ","],
+            MemberQ[{"open", "close"}, typ[[i]]], MemberQ[seg, match[[i]]],
+            role[[i]] === "M", True,
+            typ[[i]] === "op",
+              Which[
+                str[[i]] === "|", bars[] >= 2,
+                (* 先頭の負号は残す。ただし語に密着したハイフン (deg4-D) は外す *)
+                side === "lead", (str[[i]] === "-" || str[[i]] === "\:2212") && i < nt &&
+                  (role[[i + 1]] === "M" || typ[[i + 1]] === "num") &&
+                  !(i > 1 && MemberQ[{"word", "numword", "num"}, typ[[i - 1]]]),
+                True, MemberQ[{"'", "!", "*"}, str[[i]]]],
+            True, True];
+          While[seg =!= {} && !keepQ[First[seg], "lead"],
+            AppendTo[lead, First[seg]]; seg = Rest[seg]];
+          While[seg =!= {} && !keepQ[Last[seg], "trail"],
+            PrependTo[trail, Last[seg]]; seg = Most[seg]];
+          AppendTo[out, iDocTeXTextRun[StringJoin[str[[lead]]]]];
+          AppendTo[out, If[AnyTrue[seg, role[[#]] === "M" &],
+            iDocTeXMathRun[StringJoin[str[[seg]]]],
+            iDocTeXTextRun[StringJoin[str[[seg]]]]]];
+          AppendTo[out, iDocTeXTextRun[StringJoin[str[[trail]]]]]],
+        {pc, pieces}];
+      StringJoin[out]];
+
+    runs = Split[Range[nt], role[[#1]] =!= "T" && role[[#2]] =!= "T" &];
+    StringJoin[Map[
+      If[role[[First[#]]] === "T",
+        iDocTeXTextRun[StringJoin[str[[#]]]],
+        renderRun[#]] &,
+      runs]]];
 
 (* 段落 1 つ分のテキストを LaTeX 安全にする。
    \cite{} \ref{} \label{} \figurename~\ref{} と既存の $...$ / \(...\) は保護し、
-   \cite / \ref / \label のキーは iDocLaTeXSafeKey で正規化する。 *)
+   \cite / \ref / \label のキーは iDocLaTeXSafeKey で正規化する。URL は \url{} にする。
+   数式判定の段落文脈 (英文か / 単独変数の大文字 / R が変数か) をここで求めて
+   iDocTeXFreeText に渡す。 *)
 iDocLaTeXSanitizeText[text_String] :=
   Module[{pattern, pieces, protectedRule},
-    (* 保護対象: \figurename~\ref{}, \cite{} 等, $...$, \(...\),
+    (* 保護対象: URL, \figurename~\ref{}, \cite{} 等, $...$, \(...\),
        その他の LaTeX コマンド語 (LLM 数式整形の出力に含まれうる), \% \_ 等のエスケープ済み特殊文字 *)
     pattern = RegularExpression[
+      "\\\\href\\{[^}]*\\}\\{[^{}]*\\}|https?://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+|" <>
       "\\\\figurename~\\\\ref\\{[^}]*\\}|\\\\(?:cite|ref|label|eqref|pageref)\\{[^}]*\\}|" <>
       "\\$[^$]*\\$|\\\\\\(.*?\\\\\\)|\\\\[A-Za-z]+\\*?(?:\\{[^{}]*\\})?|\\\\[%_#&{}$~^\\\\]"];
     pieces = StringSplit[text, p : pattern :> {"PROTECTED", p}];
     protectedRule[{"PROTECTED", p_}] :=
       Which[
+        StringStartsQ[p, "http"],
+          (* 末尾の句読点や対応しない閉じ括弧は URL に含めない *)
+          Module[{url = p, tail = ""},
+            While[StringLength[url] > 8 &&
+                (StringMatchQ[StringTake[url, -1], RegularExpression["[.,;:!?']"]] ||
+                 (StringEndsQ[url, ")"] && StringCount[url, ")"] > StringCount[url, "("]) ||
+                 (StringEndsQ[url, "]"] && StringCount[url, "]"] > StringCount[url, "["])),
+              tail = StringTake[url, -1] <> tail; url = StringDrop[url, -1]];
+            "\\url{" <> url <> "}" <> iDocTeXTextRun[tail]],
+        StringStartsQ[p, "\\href{"],
+          Module[{url = First[StringCases[p, RegularExpression["^\\\\href\\{([^}]*)\\}"] -> "$1"]]},
+            "\\href{" <> url <> "}{" <>
+              iDocTeXTextRun[StringTake[p, {StringLength[url] + 9, -2}]] <> "}"],
         StringStartsQ[p, "\\figurename~\\ref{"],
           "\\figurename~\\ref{" <> iDocLaTeXSafeKey[StringTake[p, {18, -2}]] <> "}",
         StringMatchQ[p, RegularExpression["\\\\(cite|ref|label|eqref|pageref)\\{.*\\}"]],
@@ -5042,9 +5514,15 @@ iDocLaTeXSanitizeText[text_String] :=
         StringStartsQ[p, "\\("],
           "\\(" <> iDocTeXConvertMathUnicode[StringTake[p, {3, -3}]] <> "\\)",
         True, p];
-    StringJoin[Map[
-      If[ListQ[#], protectedRule[#], iDocTeXFreeText[#]] &,
-      pieces]]];
+    Block[{
+        $iDocTeXEnglishMode = !AnyTrue[ToCharacterCode[text], iDocTeXCJKCodeQ],
+        $iDocTeXVarLetters = Union[StringCases[text,
+          RegularExpression["(?<![A-Za-z0-9'_\\\\])([A-Za-z])(?![A-Za-z0-9.])"] -> "$1"]],
+        $iDocTeXRIsVar = StringContainsQ[text,
+          RegularExpression["(?<![A-Za-z0-9\\\\])R(?![A-Za-z0-9\:00b2\:1d48])"]]},
+      StringJoin[Map[
+        If[ListQ[#], protectedRule[#], iDocTeXFreeText[#]] &,
+        pieces]]]];
 
 (* セル 1 個分のエクスポート文字列 (複数行の可能性あり) を LaTeX 安全にする。
    lstlisting / verbatim / \[ \] / figure 環境の中身は本文として扱わない。 *)
@@ -6122,11 +6600,12 @@ DocExportLaTeX[nb_NotebookObject, opts:OptionsPattern[]] :=
       If[Length[mergedBib] > 0,
         bibLines = {"\\begin{thebibliography}{99}"};
         Do[
-          AppendTo[bibLines,
+          (* 文献欄は著者の頭文字 (Imai, K.) 等を変数にしないよう保守モードで変換 *)
+          AppendTo[bibLines, Block[{$iDocTeXConservative = True},
             "\\bibitem{" <> iDocLaTeXSafeKey[key] <> "} " <>
             iDocLaTeXSanitizeText[mergedBib[key]["Author"]] <> " (" <>
             iDocLaTeXSanitizeText[mergedBib[key]["Year"]] <> "). " <>
-            iDocLaTeXSanitizeText[mergedBib[key]["Title"]] <> "."],
+            iDocLaTeXSanitizeText[mergedBib[key]["Title"]] <> "."]],
         {key, Keys[mergedBib]}];
         AppendTo[bibLines, "\\end{thebibliography}"];
         AppendTo[lines, StringRiffle[bibLines, "\n"]]]];
@@ -7657,6 +8136,66 @@ iDocToggleFigureClean[nb_NotebookObject, cellIdx_Integer, mode_] :=
       NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagMode, "figClean"]];
     NBAccess`NBSelectCell[nb, cellIdx];
     cellIdx
+  ];
+
+(* ============================================================
+   図の翻訳 (figure translation)
+   翻訳版の図 (図中の文字を翻訳先言語に置き換えたもの) を、テキストセルの翻訳と同じ
+   mode="translated" / showTranslation で切り替える。内容の保持は図清書と同じ Compress 方式。
+   ============================================================ *)
+
+(* 図の翻訳データをもつセルか (どちらかの Compress タグがあれば翻訳セル) *)
+iDocFigureTranslationCellQ[nb_NotebookObject, cellIdx_Integer] :=
+  StringQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigTranslationBoxes]] ||
+  StringQ[NBAccess`NBCellGetTaggingRule[nb, cellIdx, $iDocTagFigTranslationSrcBoxes]];
+
+(* 原語図 ↔ 翻訳図の切替。showTrans: 現在翻訳図を表示中か。
+   表示中の内容を相手側のタグに保存してから、もう一方の内容を書き込む。 *)
+iDocToggleFigureTranslation[nb_NotebookObject, cellIdx_Integer, showTrans_] :=
+  Module[{current, other},
+    current = iDocReadCellContent[nb, cellIdx];
+    If[TrueQ[showTrans],
+      (* 翻訳図表示中 → 原語図へ。現在の翻訳図を保存 *)
+      If[current =!= $Failed,
+        NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigTranslationBoxes,
+          Compress[current]]];
+      other = iDocGetCompressedTag[nb, cellIdx, $iDocTagFigTranslationSrcBoxes];
+      If[other === $Failed,
+        MessageDialog[iL["原語の図が見つかりません。", "Original figure not found."]];
+        Return[$Failed]];
+      iDocWriteCellContent[nb, cellIdx, other];
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, False];
+      NBAccess`NBCellSetOptions[nb, cellIdx, Sequence @@ $iDocTranslatedCellOpts],
+      (* 原語図表示中 → 翻訳図へ。現在の原語図を保存 *)
+      If[current =!= $Failed,
+        NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagFigTranslationSrcBoxes,
+          Compress[current]]];
+      other = iDocGetCompressedTag[nb, cellIdx, $iDocTagFigTranslationBoxes];
+      If[other === $Failed,
+        MessageDialog[iL["翻訳版の図が見つかりません。", "Translated figure not found."]];
+        Return[$Failed]];
+      iDocWriteCellContent[nb, cellIdx, other];
+      NBAccess`NBCellSetTaggingRule[nb, cellIdx, $iDocTagShowTranslation, True];
+      NBAccess`NBCellSetOptions[nb, cellIdx, Sequence @@ $iDocTranslationCellOpts]];
+    NBAccess`NBSelectCell[nb, cellIdx];
+    cellIdx
+  ];
+
+(* エクスポート用: 原語図を表示中のセルから翻訳版の図 (figTranslationBoxes) を PNG に書き出す。
+   ラスターが取り出せなければ FrontEnd でラスタライズし、それも失敗すれば通常の画像出力に戻す。 *)
+iDocExportTranslatedFigureImage[nb_NotebookObject, cellIdx_Integer, outDir_String,
+    baseName_String] :=
+  Module[{boxes, filePath, img},
+    boxes = iDocGetCompressedTag[nb, cellIdx, $iDocTagFigTranslationBoxes];
+    If[boxes === $Failed, Return[iDocExportCellImage[nb, cellIdx, outDir, baseName]]];
+    filePath = FileNameJoin[{outDir, baseName <> ".png"}];
+    If[FileExistsQ[filePath], Quiet[DeleteFile[filePath]]];
+    img = iDocEmbeddedRasterImage[Cell[boxes, "Input"]];
+    If[!ImageQ[img],
+      img = Quiet[Check[Rasterize[Cell[boxes, "Input"], ImageResolution -> 300], $Failed]]];
+    If[ImageQ[img], Quiet[Check[Export[filePath, img, "PNG"], $Failed]]];
+    If[FileExistsQ[filePath], filePath,
+      iDocExportCellImage[nb, cellIdx, outDir, baseName]]
   ];
 
 (* 選択セルの清書を破棄し、元の手書き図に戻す。 *)
