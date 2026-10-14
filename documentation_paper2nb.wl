@@ -48,6 +48,17 @@
      JSON 応答は ImportByteArray[..., "RawJSON"] で読む (ExportString/RawJSON の
      バイト文字列の罠を避ける)。
 
+   == 翻訳するかどうか (2026-10-12) ==
+     "Translate" -> Automatic (既定) は原文の言語を判定し (DocPaperDetectLanguage: 文字種 +
+     英語の機能語 + LanguageIdentify)、"TargetLanguage" ($Language) と違うときだけ翻訳する。
+     同じ言語なら翻訳せず構造化だけ行う (翻訳ノートブック = 多言語の利用者がそれぞれの $Language で作る)。
+
+   == Web ページ (DocImportWebPage, 2026-10-12) ==
+     保存済みの HTML / テキスト / Markdown を同じ規約のノートブックにする。LLM には構造解析を
+     させず、HTML の構造 (article / main / 見出し / 段落 / 箇条書き / 表 / 図 / MathML 等) から
+     決定的にブロックを取り出し、翻訳だけを LLM に頼む (項目を JSON でまとめて渡す)。
+     画像は URL から取得して埋め込む。SourceVault の web ソースは SourceVaultMakePaperNotebook がこれを呼ぶ。
+
    == プライバシー ==
      PDF の本文とページ画像はパレットで選ばれている LLM プロバイダへ送られる。
      非公開の原稿を扱うときはローカルプロバイダ (lmstudio 等) を選ぶこと。
@@ -62,13 +73,14 @@ Needs["ClaudeCode`"];
 
 DocImportPaper::usage =
   "DocImportPaper[\"src-...\" | \"sv://...\" | \"arxiv:...\"] は SourceVault 取り込み済みの論文を元ソースの PrivacyLevel を継承して変換・登録する (SourceVaultMakePaperNotebook へ委譲: PL < 0.5 は cloud 経路 + CloudPublishable 宣言、PL >= 0.5 は $ClaudePrivateModel のみ)。\n" <>
-  "DocImportPaper[pdfPath] は論文 PDF を documentation 規約のノートブックへ逆変換する。\n" <>
+  "DocImportPaper[pdfPath] は論文 PDF を documentation 規約のノートブックへ逆変換する (HTML / テキスト / Markdown のパスなら DocImportWebPage へ委譲)。\n" <>
+  "原文の言語が TargetLanguage ($Language) と違うときだけ翻訳する (\"Translate\" -> Automatic)。\n" <>
   "第一部: 見出し・段落 (翻訳 + 原文保持, mode=\"translated\")・インライン数式 (LaTeX → TraditionalForm)・\n" <>
   "別行立て数式 (DisplayFormula, 失敗時はページ画像の切り出し)・図表 (ページ画像の切り出し + キャプション)・参考文献。\n" <>
   "第二部: 論文中の計算・アルゴリズム・数式を Wolfram Language の定義と実行例に再構成する。\n" <>
   "出力: 既定では PDF と同じフォルダに <名前>.nb を保存し、開いた NotebookObject を返す (ヘッドレスならパス)。\n" <>
   "Options:\n" <>
-  "  \"TargetLanguage\" -> Automatic ($Language), \"Translate\" -> True, \"Reconstruct\" -> True,\n" <>
+  "  \"TargetLanguage\" -> Automatic ($Language), \"Translate\" -> Automatic (原文が別の言語のときだけ) | True | False, \"Reconstruct\" -> True,\n" <>
   "  \"Pages\" -> All | {1,2,...} | Span, \"ImageResolution\" -> 150,\n" <>
   "  \"MathMode\" -> \"Auto\" (LaTeX→ボックス, 失敗時は画像) | \"Image\" (別行立ては常に画像) | \"Text\" (画像にしない),\n" <>
   "  \"Vision\" -> Automatic (ページ画像も LLM へ渡す。失敗時はテキストのみで再試行) | False,\n" <>
@@ -103,13 +115,33 @@ DocPaperTextToTextData::usage =
   "DocPaperTextToTextData[text] は $...$ / \\(...\\) を含む文字列を、インライン数式セルを埋め込んだ TextData に変換する。\n" <>
   "数式が無ければ文字列をそのまま返す。Text セルの内容としてそのまま使える。";
 
+DocImportWebPage::usage =
+  "DocImportWebPage[path] は保存済みの Web ページ (HTML / テキスト / Markdown) を documentation 規約の翻訳ノートブックへ変換する。\n" <>
+  "本文 (article / main / 本文らしい要素) から見出し・段落・箇条書き・引用・コード・表・図 (画像は取得して埋め込む)・\n" <>
+  "数式 (MathML / LaTeXML の alttext / MathJax / KaTeX の TeX) を取り出し、原文の言語が \"TargetLanguage\" ($Language) と\n" <>
+  "違えば LLM で翻訳する (原文は TaggingRules の translationSrc に保持、mode=\"translated\")。同じ言語なら翻訳せず構造化だけ。\n" <>
+  "SourceVault の web ソースは SourceVaultMakePaperNotebook[\"src-...\"] が元ソースの PL を継承してこれを呼ぶ。\n" <>
+  "Options:\n" <>
+  "  \"BaseURL\" -> Automatic (ページの URL。画像・相対リンクの解決と出典表示。Automatic = og:url / canonical), \"Title\" -> Automatic,\n" <>
+  "  \"TargetLanguage\" -> Automatic ($Language), \"Translate\" -> Automatic | True | False,\n" <>
+  "  \"Images\" -> True (False は画像を取得せずリンクだけ), \"MaxImages\" -> 30, \"Reconstruct\" -> False (True で第二部 = 計算の再構成),\n" <>
+  "  \"OutputPath\" -> Automatic, \"Open\" -> True, \"Save\" -> True, \"CloudPublishable\" -> None,\n" <>
+  "  \"Directive\" -> Automatic, \"Dictionary\" -> {}, \"HeadingStyles\" -> Automatic, \"Verbose\" -> True,\n" <>
+  "  Fallback -> False, Model -> Automatic, Timeout -> Automatic\n" <>
+  "例: DocImportWebPage[\"C:/clip/page.html\", \"BaseURL\" -> \"https://example.org/post\"]";
+
+DocPaperDetectLanguage::usage =
+  "DocPaperDetectLanguage[text] は文章の言語名 (\"Japanese\", \"English\", \"Chinese\", \"Korean\", \"French\", ...) を返す。判定できなければ Missing[\"Unknown\"]。\n" <>
+  "文字種 (かな・漢字・ハングル・キリル文字等) で決め、ラテン文字は英語の機能語の割合、それ以外は LanguageIdentify で決める。\n" <>
+  "DocImportPaper / DocImportWebPage の \"Translate\" -> Automatic (原文が TargetLanguage と違うときだけ翻訳) が使う。";
+
 $DocPaperLastAnalysis::usage =
-  "$DocPaperLastAnalysis は直近の DocImportPaper / DocPaperAnalyzePage / DocPaperExtractComputations の中間結果\n" <>
-  "(<|\"PDF\", \"Pages\", \"Blocks\", \"Computations\", \"Cells\"|>)。デバッグと再利用のために保持する。";
+  "$DocPaperLastAnalysis は直近の DocImportPaper / DocImportWebPage / DocPaperAnalyzePage / DocPaperExtractComputations の中間結果\n" <>
+  "(<|\"PDF\", \"Pages\", \"Blocks\", \"Computations\", \"Cells\", \"SourceLanguage\", \"TargetLanguage\", \"Translated\"|>)。デバッグと再利用のために保持する。";
 
 Options[DocImportPaper] = {
   "TargetLanguage" -> Automatic,
-  "Translate" -> True,
+  "Translate" -> Automatic,
   "Reconstruct" -> True,
   "Pages" -> All,
   "ImageResolution" -> 150,
@@ -131,7 +163,7 @@ Options[DocImportPaper] = {
 
 Options[DocPaperAnalyzePage] = {
   "TargetLanguage" -> Automatic,
-  "Translate" -> True,
+  "Translate" -> Automatic,
   "ImageResolution" -> 150,
   "Vision" -> Automatic,
   "Directive" -> Automatic,
@@ -151,6 +183,31 @@ Options[DocPaperExtractComputations] = {
   Model -> Automatic,
   Timeout -> Automatic
 };
+
+Options[DocImportWebPage] = {
+  "BaseURL" -> Automatic,
+  "Title" -> Automatic,
+  "TargetLanguage" -> Automatic,
+  "Translate" -> Automatic,
+  "Images" -> True,
+  "MaxImages" -> 30,
+  "Reconstruct" -> False,
+  "OutputPath" -> Automatic,
+  "Open" -> True,
+  "Save" -> True,
+  "CloudPublishable" -> None,
+  "Directive" -> Automatic,
+  "Dictionary" -> {},
+  "HeadingStyles" -> Automatic,
+  "Verbose" -> True,
+  Fallback -> False,
+  Model -> Automatic,
+  Timeout -> Automatic
+};
+
+DocImportWebPage::nofile = "ファイルが見つかりません: `1`";
+DocImportWebPage::format = "Web ページとして読めない形式です (HTML / テキスト / Markdown のみ): `1`";
+DocImportWebPage::empty = "本文を取り出せませんでした: `1`";
 
 DocImportPaper::nofile = "PDF ファイルが見つかりません: `1`";
 DocImportPaper::nopages = "PDF のページ数を取得できません: `1`";
@@ -227,6 +284,91 @@ iDocPaperResolvePages[spec_, nPages_Integer] :=
       ListQ[spec], Select[spec, IntegerQ],
       True, Range[nPages]];
     DeleteDuplicates @ Select[pages, 1 <= # <= nPages &]];
+
+(* ============================================================
+   原文の言語判定 ("Translate" -> Automatic: 原文が TargetLanguage と違うときだけ翻訳する)
+   ============================================================ *)
+
+(* 言語名の比較キー。$Language の値 (ChineseSimplified 等) と判定結果 (Chinese) と
+   LanguageIdentify の正規名 (ChineseMandarin 等) を同じ土俵で比べる。
+   簡体字と繁体字は区別しない (どちらも翻訳しない) *)
+iDocLangKey[s_String] :=
+  Module[{l = ToLowerCase[StringDelete[s, WhitespaceCharacter | "-" | "_"]]},
+    Which[
+      StringContainsQ[l, "chinese" | "mandarin"], "chinese",
+      StringContainsQ[l, "english"], "english",
+      StringContainsQ[l, "portuguese"], "portuguese",
+      StringContainsQ[l, "spanish"], "spanish",
+      True, l]];
+iDocLangKey[_] := "";
+iDocLangSameQ[a_String, b_String] := iDocLangKey[a] =!= "" && iDocLangKey[a] === iDocLangKey[b];
+iDocLangSameQ[___] := False;
+
+(* プロンプト用の言語名 *)
+iDocLangPromptName[lang_String] :=
+  Switch[lang,
+    "ChineseSimplified", "Simplified Chinese",
+    "ChineseTraditional", "Traditional Chinese",
+    _, lang];
+
+$iDocEnglishStopwords = {"the", "and", "of", "to", "is", "in", "that", "for", "with", "are", "this", "on", "it", "as", "be"};
+
+iDocCountRange[codes_List, lo_Integer, hi_Integer] :=
+  If[codes === {}, 0, Total[UnitStep[codes - lo] UnitStep[hi - codes]]];
+
+iDocLanguageIdentify[t_String, default_] :=
+  Module[{r = Quiet[TimeConstrained[LanguageIdentify[StringTake[t, UpTo[3000]]], 30, $Failed]]},
+    If[MatchQ[r, Entity["Language", _String]], r[[2]], default]];
+
+(* 文字種で決め、ラテン文字は英語の機能語の割合 (LanguageIdentify は初回にリソース取得が要るので後回し)。
+   かな・漢字 1 字はラテン文字 4 字ぶんと数える (英単語混じりの日本語技術文を日本語と判定するため)。
+   数式 $..$・コード `..`・URL は判定から外す *)
+DocPaperDetectLanguage[text_String] :=
+  Module[{t, codes, kana, han, hangul, cyr, greek, arab, hebr, thai, deva, latin, wL, cjk, words, stop},
+    t = StringReplace[StringTake[text, UpTo[20000]], {
+      "$" ~~ Shortest[__] ~~ "$" -> " ",
+      "`" ~~ Shortest[__] ~~ "`" -> " ",
+      ("http://" | "https://") ~~ Except[WhitespaceCharacter] .. -> " "}];
+    codes = ToCharacterCode[t];
+    If[codes === {}, Return[Missing["Unknown"]]];
+    kana = iDocCountRange[codes, 12352, 12543] + iDocCountRange[codes, 65382, 65439];
+    han = iDocCountRange[codes, 19968, 40959] + iDocCountRange[codes, 13312, 19903];
+    hangul = iDocCountRange[codes, 44032, 55215] + iDocCountRange[codes, 4352, 4607] + iDocCountRange[codes, 12592, 12687];
+    cyr = iDocCountRange[codes, 1024, 1279];
+    greek = iDocCountRange[codes, 880, 1023];
+    arab = iDocCountRange[codes, 1536, 1791];
+    hebr = iDocCountRange[codes, 1424, 1535];
+    thai = iDocCountRange[codes, 3584, 3711];
+    deva = iDocCountRange[codes, 2304, 2431];
+    latin = iDocCountRange[codes, 65, 90] + iDocCountRange[codes, 97, 122] + iDocCountRange[codes, 192, 591];
+    wL = latin / 4.;
+    cjk = kana + han;
+    Which[
+      kana >= Max[5, 0.03 cjk] && cjk >= wL, "Japanese",
+      han >= 5 && cjk >= wL, "Chinese",
+      hangul >= 5 && hangul >= wL, "Korean",
+      cyr >= 20 && cyr >= latin, iDocLanguageIdentify[t, "Russian"],
+      greek >= 20 && greek >= latin, "Greek",
+      arab >= 20 && arab >= latin, iDocLanguageIdentify[t, "Arabic"],
+      hebr >= 20 && hebr >= latin, "Hebrew",
+      thai >= 20 && thai >= latin, "Thai",
+      deva >= 20 && deva >= latin, iDocLanguageIdentify[t, "Hindi"],
+      latin >= 20,
+        words = ToLowerCase[StringCases[t, LetterCharacter ..]];
+        stop = If[words === {}, 0., N[Count[words, Alternatives @@ $iDocEnglishStopwords] / Length[words]]];
+        If[stop >= 0.08, "English", iDocLanguageIdentify[t, Missing["Unknown"]]],
+      True, Missing["Unknown"]]];
+DocPaperDetectLanguage[_] := Missing["Unknown"];
+
+(* "Translate" -> Automatic を真偽値に解決する。判定できなければ翻訳する (従来どおり) *)
+iDocPaperResolveTranslate[cfg_Association, sample_String] :=
+  Module[{src = DocPaperDetectLanguage[sample], tr = cfg["Translate"]},
+    src = If[StringQ[src], src, ""];
+    tr = Which[
+      tr === True || tr === False, tr,
+      src =!= "" && iDocLangSameQ[src, cfg["TargetLanguage"]], False,
+      True, True];
+    Join[cfg, <|"Translate" -> tr, "SourceLanguage" -> src|>]];
 
 (* ============================================================
    LLM 呼び出しと JSON 読み取り
@@ -513,11 +655,12 @@ DocPaperAnalyzePage[pdf_String, p_Integer, opts:OptionsPattern[]] :=
     nPages = Quiet[Import[pdf, "PageCount"]];
     If[!IntegerQ[nPages], Message[DocImportPaper::nopages, pdf]; Return[$Failed]];
     cfg = iDocPaperConfig[{opts}, Options[DocPaperAnalyzePage]];
+    cfg = iDocPaperResolveTranslate[cfg, iDocPaperPagePlainText[pdf, p]];
     iDocPaperAnalyzePageImpl[pdf, p, nPages, cfg]];
 
 (* オプション → 設定 Association。opts が先、defaults が後 (Lookup は最初の一致を返す) *)
 $iDocPaperAllDefaults = {
-  "TargetLanguage" -> Automatic, "Translate" -> True, "Reconstruct" -> True, "Pages" -> All,
+  "TargetLanguage" -> Automatic, "Translate" -> Automatic, "Reconstruct" -> True, "Pages" -> All,
   "ImageResolution" -> 150, "MathMode" -> "Auto", "Vision" -> Automatic, "OutputPath" -> Automatic,
   "Open" -> True, "Save" -> True, "CloudPublishable" -> None, "Directive" -> Automatic,
   "Dictionary" -> {}, "HeadingStyles" -> Automatic, "Verbose" -> True, "VisionTimeout" -> Automatic,
@@ -543,7 +686,9 @@ iDocPaperConfig[opts_List, defaults_List] :=
     lang = iDocPaperTargetLanguage[get["TargetLanguage"]];
     directive = get["Directive"];
     <|"TargetLanguage" -> lang,
-      "Translate" -> TrueQ[get["Translate"]],
+      (* Automatic は呼び出し側が原文の言語を見て iDocPaperResolveTranslate で真偽値にする *)
+      "Translate" -> Replace[get["Translate"], Except[True | False] -> Automatic],
+      "SourceLanguage" -> "",
       "Reconstruct" -> TrueQ[get["Reconstruct"]],
       "Pages" -> get["Pages"],
       "ImageResolution" -> Replace[get["ImageResolution"], Except[_?NumericQ] -> 150],
@@ -578,7 +723,7 @@ iDocPaperAnalyzePageImpl[pdf_String, p_Integer, nPages_Integer, cfg_Association]
         "Left" -> 0, "Right" -> 0, "Top" -> 0, "Bottom" -> 0|>};
       hasBlocks = True];
     prompt = iDocPaperAnalysisPrompt[p, nPages, blocksText, hasBlocks,
-      TrueQ[cfg["Vision"]] && ImageQ[img], cfg["Translate"], lang,
+      TrueQ[cfg["Vision"]] && ImageQ[img], TrueQ[cfg["Translate"]], lang,
       cfg["Directive"], iDocPaperDictionaryPrompt[cfg["Dictionary"]]];
     iDocPaperLog[cfg["Verbose"], "ページ " <> ToString[p] <> " を LLM で構造解析中 (" <>
       ToString[Length[pageBlocks]] <> " ブロック" <>
@@ -1437,6 +1582,18 @@ DocImportPaper[ref_String, opts:OptionsPattern[]] /;
 iDocPaperSourceRefQ[s_String] := StringStartsQ[s, "src-"] || StringStartsQ[s, "sv://"] ||
   StringStartsQ[s, "arxiv:", IgnoreCase -> True] || StringStartsQ[s, "http://"] || StringStartsQ[s, "https://"];
 
+(* 保存済みの Web ページ (HTML / テキスト / Markdown) は DocImportWebPage へ *)
+DocImportPaper[path_String, opts:OptionsPattern[]] /;
+    FileExistsQ[path] && iDocWebFormat[path] =!= None :=
+  DocImportWebPage[path, opts];
+
+(* 翻訳の有無 (ログと Web ページの出典セル) *)
+iDocPaperTranslateNote[cfg_Association] :=
+  If[TrueQ[cfg["Translate"]],
+    iL["訳: ", "translated: "] <> If[cfg["SourceLanguage"] =!= "", cfg["SourceLanguage"] <> " → ", ""] <> cfg["TargetLanguage"],
+    iL["翻訳なし (原文が ", "not translated (the source is in "] <>
+      If[cfg["SourceLanguage"] =!= "", cfg["SourceLanguage"], cfg["TargetLanguage"]] <> ")"];
+
 DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
   Module[{pdf, cfg, nPages, pages, pageResults = {}, blocks, cells, comp = None, nbExpr, outPath,
           nb, t0 = AbsoluteTime[], failedPages = {}, connFail = 0, aborted},
@@ -1446,9 +1603,14 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
     If[!IntegerQ[nPages] || nPages < 1, Message[DocImportPaper::nopages, pdf]; Return[$Failed]];
     cfg = iDocPaperConfig[{opts}, Options[DocImportPaper]];
     pages = iDocPaperResolvePages[cfg["Pages"], nPages];
-    iDocPaperLog[cfg["Verbose"], FileNameTake[pdf] <> ": " <> ToString[Length[pages]] <> " ページを変換します (訳: " <>
-      cfg["TargetLanguage"] <> ", 数式: " <> cfg["MathMode"] <> ")"];
-    $DocPaperLastAnalysis = <|"PDF" -> pdf, "Pages" -> pages|>;
+    (* 原文の言語は対象ページの先頭 3 ページの文字層で判定する (文字層が無ければ判定不能 = 翻訳する) *)
+    cfg = iDocPaperResolveTranslate[cfg,
+      StringTake[StringRiffle[Map[iDocPaperPagePlainText[pdf, #] &, Take[pages, UpTo[3]]], "\n"], UpTo[8000]]];
+    iDocPaperLog[cfg["Verbose"], FileNameTake[pdf] <> ": " <> ToString[Length[pages]] <> " ページを変換します (" <>
+      iDocPaperTranslateNote[cfg] <> ", 数式: " <> cfg["MathMode"] <> ")"];
+    $DocPaperLastAnalysis = <|"PDF" -> pdf, "Pages" -> pages, "Kind" -> "pdf",
+      "SourceLanguage" -> cfg["SourceLanguage"], "TargetLanguage" -> cfg["TargetLanguage"],
+      "Translated" -> cfg["Translate"], "FailedPages" -> {}|>;
 
     (* --- 第一部: ページごとの構造解析 ---
        LLM サーバへの接続失敗 (URL 違い / サーバ停止) が 2 ページ続いたら、残りのページを
@@ -1474,6 +1636,13 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
       iDocPaperLog[True, "解析に失敗したページ: " <> ToString[failedPages]]];
     blocks = iDocPaperMergeAllPages[pageResults, cfg["TargetLanguage"]];
     $DocPaperLastAnalysis["Blocks"] = blocks;
+    $DocPaperLastAnalysis["FailedPages"] = failedPages;
+    (* 文字層で判定できなかったときは LLM が各ページについて答えた言語の多数決 *)
+    If[cfg["SourceLanguage"] === "",
+      With[{langs = Select[Lookup[blocks, "Language", ""], StringQ[#] && StringTrim[#] =!= "" &]},
+        If[langs =!= {},
+          cfg["SourceLanguage"] = First[Commonest[langs]];
+          $DocPaperLastAnalysis["SourceLanguage"] = cfg["SourceLanguage"]]]];
     iDocPaperLog[cfg["Verbose"], ToString[Length[blocks]] <> " ブロックをセルに変換中..."];
     cells = iDocPaperBlocksToCells[blocks, pdf, cfg];
 
@@ -1495,10 +1664,17 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
         "paperSource" -> pdf,
         "paperImportedAt" -> DateString["ISODateTime"],
         "paperTargetLanguage" -> cfg["TargetLanguage"],
+        "paperSourceLanguage" -> cfg["SourceLanguage"],
+        "paperTranslated" -> TrueQ[cfg["Translate"]],
         "paperFailedPages" -> failedPages}}];
 
     outPath = iDocPaperOutputPath[pdf, cfg["OutputPath"]];
-    nb = None;
+    iDocPaperFinishNotebook[nbExpr, outPath, cfg, pdf, Length[cells], t0]];
+
+(* 生成したノートブック式を開く / 保存する / CloudPublishable を宣言する (DocImportPaper と DocImportWebPage の共通部)。
+   返り値: 開いた NotebookObject、保存したパス、どちらも無ければノートブック式 *)
+iDocPaperFinishNotebook[nbExpr_Notebook, outPath_String, cfg_Association, srcFile_String, nCells_Integer, t0_] :=
+  Module[{nb = None},
     Which[
       $FrontEnd =!= Null && TrueQ[cfg["Open"]],
         nb = NotebookPut[nbExpr];
@@ -1510,8 +1686,8 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
       If[MemberQ[{True, False}, cfg["CloudPublishable"]],
         Quiet @ Check[NBAccess`NBSetCloudPublishable[outPath, cfg["CloudPublishable"]], Null]]];
     If[Head[nb] === NotebookObject,
-      Quiet @ Check[NBAccess`NBHistoryAddAttachment[nb, "history", pdf], Null]];
-    iDocPaperLog[cfg["Verbose"], "完了: " <> ToString[Length[cells]] <> " セル, " <>
+      Quiet @ Check[NBAccess`NBHistoryAddAttachment[nb, "history", srcFile], Null]];
+    iDocPaperLog[cfg["Verbose"], "完了: " <> ToString[nCells] <> " セル, " <>
       ToString[Round[AbsoluteTime[] - t0]] <> " 秒" <>
       If[TrueQ[cfg["Save"]] && FileExistsQ[outPath], " -> " <> outPath, ""]];
     Which[
@@ -1520,13 +1696,868 @@ DocImportPaper[pdfIn_String, opts:OptionsPattern[]] :=
       True, nbExpr]];
 
 (* ============================================================
+   Web ページ (HTML / テキスト / Markdown) → 翻訳ノートブック (DocImportWebPage)
+   LLM には構造解析をさせない: HTML の構造から決定的にブロックを取り出し、翻訳だけを頼む。
+   ブロック: <|"type" -> "title" | "heading" | "paragraph" | "quote" | "item" | "code" | "display_math"
+                       | "image" | "table" | "caption" | "references",
+               "text", "level" (見出し 1-3 / 箇条書き 0-2), "ordered", "latex", "label", "src", "alt",
+               "caption", "rows", "items", "heading", "translation", "captionTranslation", "rowsTranslation", "Image"|>
+   本文中の数式は $...$ (TeX)、インラインコードは `...`、地の文のドル記号は \$ で表す
+   (LaTeX と同じ書き方。翻訳中もそのまま保たせ、セルにするときに戻す)。
+   MathJax / KaTeX を使うページだけは地の文の $...$ / \(...\) を数式として扱う。
+   ============================================================ *)
+
+iDocWebFormat[path_String] :=
+  Switch[ToLowerCase[FileExtension[path]],
+    "html" | "htm" | "xhtml" | "shtml", "html",
+    "md" | "markdown", "markdown",
+    "txt" | "text", "text",
+    _, None];
+iDocWebFormat[_] := None;
+
+(* ---- XMLObject の小道具 (HTML の Import は名前空間付きのタグ {ns, name} もありうる) ---- *)
+iDocWebTagName[t_] := ToLowerCase[If[ListQ[t], ToString[Last[t]], ToString[t]]];
+iDocWebTag[XMLElement[t_, _, _]] := iDocWebTagName[t];
+iDocWebTag[_] := "";
+
+iDocWebAttr[attrs_List, name_String] :=
+  Module[{r = SelectFirst[attrs, MatchQ[#, (k_ -> _) /; iDocWebTagName[k] === name] &, None]},
+    If[r === None, "", ToString[r[[2]]]]];
+iDocWebAttr[_, _] := "";
+iDocWebHasAttrQ[attrs_List, name_String] := AnyTrue[attrs, MatchQ[#, (k_ -> _) /; iDocWebTagName[k] === name] &];
+
+iDocWebClasses[attrs_] := ToLowerCase /@ StringSplit[iDocWebAttr[attrs, "class"]];
+(* class と id を - _ 空白で細かく切った語 (share-buttons → share, buttons) *)
+iDocWebTokens[attrs_] := DeleteDuplicates[ToLowerCase /@
+  StringSplit[iDocWebAttr[attrs, "class"] <> " " <> iDocWebAttr[attrs, "id"], WhitespaceCharacter | "-" | "_"]];
+
+iDocWebNum[s_String] := With[{d = StringCases[s, DigitCharacter ..]}, If[d === {}, 0, FromDigits[First[d]]]];
+
+(* 本文量の目安 (文字数)。aside は本文の候補選びでは数えない *)
+iDocWebLen[s_String] := StringLength[StringTrim[s]];
+iDocWebLen[e:XMLElement[_, _, c_List]] := If[iDocWebTag[e] === "aside", 0, Total[iDocWebLen /@ c]];
+iDocWebLen[_] := 0;
+
+(* pre 等の生テキスト (空白を保つ) *)
+iDocWebRawText[c_List] := StringJoin[Map[iDocWebRawText1, c]];
+iDocWebRawText[_] := "";
+iDocWebRawText1[s_String] := s;
+iDocWebRawText1[e:XMLElement[_, _, c_List]] := Switch[iDocWebTag[e], "br", "\n", "rt" | "rp", "", _, iDocWebRawText[c]];
+iDocWebRawText1[_] := "";
+
+SetAttributes[iDocWebReapBlocks, HoldFirst];
+iDocWebReapBlocks[expr_] := With[{r = Reap[expr, "block"][[2]]}, If[r === {}, {}, First[r]]];
+
+iDocWebEscape[s_String, mathMode_] := If[TrueQ[mathMode], s, StringReplace[s, "$" -> "\\$"]];
+
+(* ---- URL の解決 (画像の src を絶対 URL に) ---- *)
+iDocWebNormPath[p_String] :=
+  Module[{pos = StringPosition[p, "?" | "#", 1], path, query, segs, out = {}},
+    {path, query} = If[pos === {}, {p, ""}, {StringTake[p, pos[[1, 1]] - 1], StringDrop[p, pos[[1, 1]] - 1]}];
+    segs = StringSplit[path, "/", All];
+    Do[Which[s === ".", Null, s === "..", If[Length[out] > 1, out = Most[out]], True, AppendTo[out, s]], {s, segs}];
+    If[segs =!= {} && MemberQ[{".", ".."}, Last[segs]], AppendTo[out, ""]];
+    StringRiffle[out, "/"] <> query];
+
+iDocWebResolveURL[base_String, refIn_String] :=
+  Module[{ref = StringTrim[refIn], origin, path, dir},
+    Which[
+      ref === "", "",
+      StringMatchQ[ref, RegularExpression["(?i)[a-z][a-z0-9+.-]*:.*"]], ref,
+      ! StringMatchQ[base, RegularExpression["(?i)https?://.+"]], ref,
+      StringStartsQ[ref, "//"], First[StringSplit[base, ":"]] <> ":" <> ref,
+      True,
+        origin = First[StringCases[base, RegularExpression["(?i)^https?://[^/?#]+"]]];
+        path = StringReplace[StringDrop[base, StringLength[origin]], RegularExpression["[?#].*$"] -> ""];
+        Which[
+          StringStartsQ[ref, "/"], origin <> iDocWebNormPath[ref],
+          StringStartsQ[ref, "?"] || StringStartsQ[ref, "#"], origin <> If[path === "", "/", path] <> ref,
+          True,
+            dir = If[path === "", "/", StringReplace[path, RegularExpression["[^/]*$"] -> ""]];
+            origin <> iDocWebNormPath[dir <> ref]]]];
+iDocWebResolveURL[_, ref_String] := ref;
+
+(* ---- 本文でないものを落とす ---- *)
+$iDocWebSkipTags = {"script", "style", "noscript", "template", "svg", "canvas", "iframe", "object", "embed",
+  "form", "button", "select", "input", "textarea", "option", "nav", "footer", "head", "link", "meta",
+  "dialog", "video", "audio", "map", "area", "track", "param"};
+$iDocWebKeepTags = {"html", "body", "main", "article", "math", "x-tex"};
+$iDocWebSkipTokens = {"share", "sharing", "social", "breadcrumb", "breadcrumbs", "sidebar", "related",
+  "recommend", "recommended", "recommendation", "comments", "comment", "advert", "advertisement", "ads",
+  "cookie", "cookies", "newsletter", "subscribe", "subscription", "promo", "footer", "navbar", "navigation",
+  "nav", "menu", "toolbar", "skip", "banner", "popup", "modal"};
+$iDocWebSkipClasses = {"sr-only", "visually-hidden", "visuallyhidden", "screen-reader-text", "ltx_error",
+  "mw-editsection", "noprint", "ltx_page_footer"};
+$iDocWebSkipRoles = {"navigation", "banner", "contentinfo", "complementary", "search", "dialog", "alertdialog",
+  "menu", "menubar", "toolbar"};
+
+iDocWebSkipQ[e:XMLElement[_, attrs_, c_], bodyLen_] :=
+  Module[{tag = iDocWebTag[e], soft},
+    Which[
+      MemberQ[$iDocWebSkipTags, tag], True,
+      MemberQ[$iDocWebKeepTags, tag], False,
+      IntersectingQ[iDocWebClasses[attrs], $iDocWebSkipClasses], True,
+      (* LaTeXML が変換に失敗した前置きの段落 (\newfloat 等が ltx_ERROR として並ぶ) *)
+      tag === "p" && Count[c, XMLElement[_, a_, _] /; MemberQ[iDocWebClasses[a], "ltx_error"]] >= 2, True,
+      True,
+        soft = iDocWebHasAttrQ[attrs, "hidden"] ||
+          ToLowerCase[iDocWebAttr[attrs, "aria-hidden"]] === "true" ||
+          StringContainsQ[ToLowerCase[StringDelete[iDocWebAttr[attrs, "style"], WhitespaceCharacter]],
+            "display:none" | "visibility:hidden"] ||
+          MemberQ[$iDocWebSkipRoles, ToLowerCase[iDocWebAttr[attrs, "role"]]] ||
+          IntersectingQ[iDocWebTokens[attrs], $iDocWebSkipTokens];
+        (* 本文の大半を抱える要素は名前が紛らわしくても落とさない (class="content comments-on" 等) *)
+        soft && iDocWebLen[e] < 0.4 bodyLen]];
+
+iDocWebPrune[e:XMLElement[t_, attrs_, c_List], bodyLen_] :=
+  If[iDocWebSkipQ[e, bodyLen], Nothing,
+    XMLElement[t, attrs, Map[Which[StringQ[#], #, MatchQ[#, _XMLElement], iDocWebPrune[#, bodyLen], True, Nothing] &, c]]];
+
+(* 数式の前処理: MathJax の <script type="math/tex"> と KaTeX の描画 (annotation に TeX がある) を
+   x-tex 要素に置き換える (script は後で落とされ、KaTeX の描画部は aria-hidden なので) *)
+iDocWebTeXAnnotation[e_] :=
+  FirstCase[e, (XMLElement[t_, a_, c_] /; iDocWebTagName[t] === "annotation" &&
+      StringContainsQ[ToLowerCase[iDocWebAttr[a, "encoding"]], "tex"]) :> StringTrim[iDocWebRawText[c]],
+    Missing["NoTeX"], Infinity];
+
+iDocWebPre[e:XMLElement[t_, attrs_, c_List]] :=
+  Module[{tag = iDocWebTag[e], type = ToLowerCase[iDocWebAttr[attrs, "type"]], cls = iDocWebClasses[attrs], tex},
+    Which[
+      tag === "script" && StringStartsQ[type, "math/tex"],
+        XMLElement["x-tex", {"display" -> If[StringContainsQ[type, "display"], "block", "inline"]}, {iDocWebRawText[c]}],
+      MemberQ[cls, "katex-display"] || MemberQ[cls, "katex"],
+        tex = iDocWebTeXAnnotation[e];
+        If[StringQ[tex] && tex =!= "",
+          XMLElement["x-tex", {"display" -> If[MemberQ[cls, "katex-display"], "block", "inline"]}, {tex}],
+          XMLElement[t, attrs, iDocWebPre /@ c]],
+      True, XMLElement[t, attrs, iDocWebPre /@ c]]];
+iDocWebPre[x_] := x;
+
+iDocWebMathJaxQ[x_] :=
+  AnyTrue[Cases[x, (XMLElement[t_, a_, c_] /; MemberQ[{"script", "link"}, iDocWebTagName[t]]) :>
+      iDocWebAttr[a, "src"] <> " " <> iDocWebAttr[a, "href"] <> " " <> iDocWebAttr[a, "type"] <> " " <>
+        StringTake[iDocWebRawText[c], UpTo[3000]], Infinity],
+    StringContainsQ[#, "mathjax" | "katex" | "math/tex", IgnoreCase -> True] &];
+
+(* ---- 本文の容器を選ぶ: 最大の article → main → 本文の 7 割以上を持つ子へ降りていく ---- *)
+iDocWebMain[body_XMLElement] :=
+  Module[{total = iDocWebLen[body], pick, node, kids, k},
+    pick = Function[cands, If[cands === {}, None,
+      With[{b = First[MaximalBy[cands, iDocWebLen]]}, If[iDocWebLen[b] >= 0.3 total, b, None]]]];
+    node = pick[Cases[body, e_XMLElement /; iDocWebTag[e] === "article", Infinity]];
+    If[node =!= None, Return[node]];
+    node = pick[Cases[body, (e:XMLElement[_, a_, _] /;
+      iDocWebTag[e] === "main" || ToLowerCase[iDocWebAttr[a, "role"]] === "main"), Infinity]];
+    If[node =!= None, Return[node]];
+    node = body;
+    While[True,
+      kids = Cases[node[[3]], _XMLElement];
+      If[kids === {}, Break[]];
+      k = First[MaximalBy[kids, iDocWebLen]];
+      If[iDocWebLen[k] > 0 && iDocWebLen[k] >= 0.7 iDocWebLen[node], node = k, Break[]]];
+    node];
+
+(* ---- 本文を歩いてブロックを Sow する ---- *)
+$iDocWebInlineTags = {"a", "abbr", "b", "bdi", "bdo", "big", "br", "cite", "code", "data", "del", "dfn", "em",
+  "font", "i", "img", "ins", "kbd", "label", "mark", "math", "x-tex", "nobr", "picture", "q", "rp", "rt", "ruby",
+  "s", "samp", "small", "source", "span", "strike", "strong", "sub", "sup", "time", "tt", "u", "var", "wbr"};
+iDocWebInlineQ[e_XMLElement] := MemberQ[$iDocWebInlineTags, iDocWebTag[e]];
+iDocWebInlineQ[_] := False;
+
+iDocWebInlineString[s_String, ctx_Association] :=
+  iDocWebEscape[StringReplace[StringDelete[s, "\:200b" | "\:200c" | "\:200d" | "\:feff" | "\:00ad"],
+    (WhitespaceCharacter | "\[NonBreakingSpace]") .. -> " "], ctx["MathMode"]];
+
+iDocWebMathTeX[e:XMLElement[_, attrs_, c_]] :=
+  Module[{tex = StringTrim[iDocWebAttr[attrs, "alttext"]]},
+    If[tex === "", tex = Replace[iDocWebTeXAnnotation[e], Except[_String] -> ""]];
+    If[tex === "", tex = StringTrim[StringReplace[iDocWebRawText[c], WhitespaceCharacter .. -> " "]]];
+    tex];
+
+iDocWebTeXSegment[tex_String, display_] :=
+  Which[
+    (* 所属ロゴ等の画像を数式として書いたもの (\raisebox{..}{\includegraphics..}) は捨てる *)
+    tex === "" || StringContainsQ[tex, "\\includegraphics"], {},
+    TrueQ[display], {<|"type" -> "display_math", "latex" -> tex, "label" -> ""|>},
+    True, {"$" <> tex <> "$"}];
+
+iDocWebCodeSegment[raw_String] :=
+  Module[{t = StringTrim[raw, ("\n" | "\r") ..]},
+    Which[
+      StringTrim[t] === "", {},
+      StringContainsQ[t, "\n"], {<|"type" -> "code", "text" -> iDocWebTrimCode[t]|>},
+      True, {"`" <> StringReplace[StringTrim[t], "`" -> "'"] <> "`"}]];
+
+iDocWebTrimCode[t_String] :=
+  StringTrim[StringReplace[t, {"\r\n" -> "\n", "\r" -> "\n", "\[NonBreakingSpace]" -> " "}], "\n" ..];
+
+(* 遅延読み込み (data-src 等) と srcset。透明 GIF / SVG のプレースホルダは使わない *)
+iDocWebPlaceholderQ[s_String] :=
+  StringStartsQ[s, "data:image/svg", IgnoreCase -> True] ||
+  (StringStartsQ[s, "data:image/gif", IgnoreCase -> True] && StringLength[s] < 300);
+iDocWebSrcsetFirst[s_String] :=
+  Module[{parts = Select[StringTrim /@ StringSplit[s, ","], # =!= "" &]},
+    If[parts === {}, "", First[StringSplit[First[parts]]]]];
+iDocWebImgSrc[attrs_List, base_String] :=
+  Module[{cands, s},
+    cands = Select[iDocWebAttr[attrs, #] & /@ {"data-src", "data-original", "data-lazy-src", "data-actualsrc", "src"},
+      StringTrim[#] =!= "" && ! iDocWebPlaceholderQ[#] &];
+    s = If[cands =!= {}, First[cands],
+      iDocWebSrcsetFirst[iDocWebAttr[attrs, "data-srcset"] <> "," <> iDocWebAttr[attrs, "srcset"]]];
+    If[StringTrim[s] === "", "", iDocWebResolveURL[base, s]]];
+
+(* アイコン・絵文字・バッジ・トラッキング画素は図にしない (短い alt だけ本文に残す) *)
+iDocWebImgSegment[attrs_List, ctx_] :=
+  Module[{src = iDocWebImgSrc[attrs, Lookup[ctx, "Base", ""]], alt = StringTrim[iDocWebAttr[attrs, "alt"]],
+          w = iDocWebNum[iDocWebAttr[attrs, "width"]], h = iDocWebNum[iDocWebAttr[attrs, "height"]], small},
+    small = (0 < w < 48) || (0 < h < 48) ||
+      IntersectingQ[iDocWebTokens[attrs], {"emoji", "icon", "avatar", "logo", "badge"}] ||
+      (* GitHub は画像を camo 経由にし、元の URL を data-canonical-src に残す *)
+      StringContainsQ[src <> " " <> iDocWebAttr[attrs, "data-canonical-src"], "shields.io" | "badgen.net" | "/badge",
+        IgnoreCase -> True];
+    Which[
+      w === 1 || h === 1, {},
+      src === "" || small, If[alt =!= "" && StringLength[alt] <= 4, {alt}, {}],
+      True, {<|"type" -> "image", "src" -> src, "alt" -> alt, "caption" -> ""|>}]];
+
+iDocWebInline[e:XMLElement[_, attrs_, c_List], ctx_] :=
+  Switch[iDocWebTag[e],
+    "br", {"\n"},
+    "wbr" | "rt" | "rp" | "source", {},
+    "img", iDocWebImgSegment[attrs, ctx],
+    "math", iDocWebTeXSegment[iDocWebMathTeX[e], ToLowerCase[iDocWebAttr[attrs, "display"]] === "block"],
+    "x-tex", iDocWebTeXSegment[StringTrim[iDocWebRawText[c]], iDocWebAttr[attrs, "display"] === "block"],
+    "code", iDocWebCodeSegment[iDocWebRawText[c]],
+    _, Join @@ Map[iDocWebInlineChild[#, ctx] &, c]];
+iDocWebInline[_, _] := {};
+
+iDocWebInlineChild[s_String, ctx_] := {iDocWebInlineString[s, ctx]};
+iDocWebInlineChild[e_XMLElement, ctx_] :=
+  If[iDocWebInlineQ[e], iDocWebInline[e, ctx],
+    (* インライン要素の中のブロック要素 (a の中の div 等) はブロックとして取り出し、段落を切る *)
+    iDocWebReapBlocks[iDocWebBlock[e, ctx]]];
+iDocWebInlineChild[_, _] := {};
+
+(* 行ごとに空白を詰め、空行を除く (br は改行として残る) *)
+iDocWebCleanInline[raw_String] :=
+  StringRiffle[Select[StringTrim[StringReplace[#, " " .. -> " "]] & /@ StringSplit[raw, "\n", All], # =!= "" &], "\n"];
+
+iDocWebSowText[raw_String, ctx_Association] :=
+  Module[{t = iDocWebCleanInline[raw], m},
+    If[t === "", Return[Null]];
+    (* MathJax のページで段落全体が $$...$$ / \[...\] なら別行立て数式 *)
+    If[TrueQ[ctx["MathMode"]],
+      m = StringCases[t, RegularExpression["(?s)^\\$\\$(.+)\\$\\$$|^\\\\\\[(.+)\\\\\\]$"] -> "$1$2"];
+      If[m =!= {} && StringTrim[First[m]] =!= "",
+        Sow[<|"type" -> "display_math", "latex" -> StringTrim[First[m]], "label" -> ""|>, "block"];
+        Return[Null]]];
+    Sow[<|"type" -> Lookup[ctx, "ParaType", "paragraph"], "text" -> t|>, "block"]];
+
+(* 容器の子: インラインの連なりは段落にまとめ、ブロック要素は再帰する *)
+iDocWebEmit[children_List, ctx_Association] :=
+  Module[{buf = {}, flush},
+    flush[] := (iDocWebSowText[StringJoin[buf], ctx]; buf = {});
+    Do[
+      Which[
+        StringQ[ch], AppendTo[buf, iDocWebInlineString[ch, ctx]],
+        iDocWebInlineQ[ch],
+          Do[If[StringQ[seg], AppendTo[buf, seg], flush[]; Sow[seg, "block"]], {seg, iDocWebInline[ch, ctx]}],
+        MatchQ[ch, _XMLElement], flush[]; iDocWebBlock[ch, ctx],
+        True, Null],
+      {ch, children}];
+    flush[]];
+
+(* 見出し・表のセル・キャプション用: 中身を 1 つの文字列に (ブロック要素の境は改行) *)
+iDocWebFlatText[c_List, ctx_] := iDocWebCleanInline[StringJoin[Map[iDocWebFlat[#, ctx] &, c]]];
+iDocWebFlatText[_, _] := "";
+iDocWebFlat[s_String, ctx_] := iDocWebInlineString[s, ctx];
+iDocWebFlat[e:XMLElement[_, attrs_, c_List], ctx_] :=
+  Switch[iDocWebTag[e],
+    "br", "\n",
+    "img", With[{a = StringTrim[iDocWebAttr[attrs, "alt"]]}, If[StringLength[a] <= 4, a, ""]],
+    "math", With[{tex = iDocWebMathTeX[e]}, If[tex === "" || StringContainsQ[tex, "\\includegraphics"], "", "$" <> tex <> "$"]],
+    "x-tex", With[{tex = StringTrim[iDocWebRawText[c]]}, If[tex === "", "", "$" <> tex <> "$"]],
+    "code", With[{t = StringTrim[StringReplace[iDocWebRawText[c], {"`" -> "'", "\n" -> " "}]]}, If[t === "", "", "`" <> t <> "`"]],
+    "rt" | "rp" | "source" | "wbr", "",
+    _, With[{inner = StringJoin[Map[iDocWebFlat[#, ctx] &, c]]}, If[iDocWebInlineQ[e], inner, "\n" <> inner <> "\n"]]];
+iDocWebFlat[_, _] := "";
+
+iDocWebHeadingTagQ[tag_String] := StringMatchQ[tag, "h" ~~ DigitCharacter];
+
+iDocWebBiblioQ[e:XMLElement[_, attrs_, _], ctx_] :=
+  MemberQ[{"section", "div", "ol", "ul", "dl", "aside"}, iDocWebTag[e]] &&
+  IntersectingQ[iDocWebTokens[attrs], {"bibliography", "references", "reflist", "biblist"}] &&
+  iDocWebLen[e] < 0.5 Lookup[ctx, "TotalLen", Infinity];
+
+iDocWebBlock[e:XMLElement[_, attrs_, c_List], ctx_Association] :=
+  Module[{tag = iDocWebTag[e]},
+    Which[
+      iDocWebHeadingTagQ[tag],
+        With[{t = StringReplace[StringReplace[iDocWebFlatText[c, ctx], "\n" -> " "],
+            (WhitespaceCharacter | "\[Paragraph]" | "#") .. ~~ EndOfString -> ""]},
+          If[t =!= "", Sow[<|"type" -> "heading", "tagLevel" -> FromDigits[StringDrop[tag, 1]], "text" -> t|>, "block"]]],
+      iDocWebBiblioQ[e, ctx], iDocWebReferences[e, ctx],
+      MemberQ[{"ul", "ol", "menu"}, tag], iDocWebList[e, ctx, 0],
+      tag === "pre",
+        With[{t = iDocWebTrimCode[iDocWebRawText[c]]},
+          If[StringTrim[t] =!= "", Sow[<|"type" -> "code", "text" -> t|>, "block"]]],
+      tag === "blockquote", iDocWebEmit[c, Append[ctx, "ParaType" -> "quote"]],
+      tag === "table", iDocWebTable[e, ctx],
+      tag === "figure", iDocWebFigure[e, ctx],
+      tag === "hr", Null,
+      True, iDocWebEmit[c, ctx]]];
+iDocWebBlock[_, _] := Null;
+
+(* 箇条書き: li ごとに 1 ブロック (入れ子は level + 1)。li の中のコード・図は項目の後に出す *)
+iDocWebList[e:XMLElement[_, _, c_List], ctx_, depth_Integer] :=
+  Module[{ordered = iDocWebTag[e] === "ol"},
+    Do[
+      Which[
+        ! MatchQ[ch, _XMLElement], Null,
+        iDocWebTag[ch] === "li", iDocWebListItem[ch, ctx, depth, ordered],
+        MemberQ[{"ul", "ol"}, iDocWebTag[ch]], iDocWebList[ch, ctx, depth + 1],
+        True, iDocWebBlock[ch, ctx]],
+      {ch, c}]];
+
+iDocWebListItem[XMLElement[_, _, c_List], ctx_, depth_Integer, ordered_] :=
+  Module[{listQ, nested, blocks, paras, text},
+    listQ = Function[x, MatchQ[x, _XMLElement] && MemberQ[{"ul", "ol"}, iDocWebTag[x]]];
+    nested = Select[c, listQ];
+    blocks = iDocWebReapBlocks[iDocWebEmit[Select[c, ! listQ[#] &], ctx]];
+    paras = Select[blocks, MemberQ[{"paragraph", "quote"}, #["type"]] &];
+    text = StringRiffle[Lookup[paras, "text", {}], "\n"];
+    If[text =!= "", Sow[<|"type" -> "item", "text" -> text, "level" -> Min[depth, 2], "ordered" -> ordered|>, "block"]];
+    Scan[Sow[#, "block"] &, Select[blocks, ! MemberQ[{"paragraph", "quote"}, #["type"]] &]];
+    Scan[iDocWebList[#, ctx, depth + 1] &, nested]];
+
+iDocWebRows[XMLElement[_, _, c_List]] :=
+  Flatten[Map[Function[x, Which[
+      ! MatchQ[x, _XMLElement], {},
+      iDocWebTag[x] === "tr", {x},
+      MemberQ[{"thead", "tbody", "tfoot"}, iDocWebTag[x]], Select[x[[3]], MatchQ[#, _XMLElement] && iDocWebTag[#] === "tr" &],
+      True, {}]], c], 1];
+
+(* 表: LaTeXML の数式表 (class が ltx_equation で始まる) は別行立て数式。レイアウト用の表 (1 列 / 入れ子 / 段落だらけ) は中身を本文として読む *)
+iDocWebTable[e:XMLElement[_, attrs_, c_List], ctx_] :=
+  Module[{cls = iDocWebClasses[attrs], trs = iDocWebRows[e], tex, label, cellsOf, rows, cap},
+    cellsOf = Function[tr, Select[tr[[3]], MatchQ[#, _XMLElement] && MemberQ[{"td", "th"}, iDocWebTag[#]] &]];
+    If[AnyTrue[cls, StringStartsQ[#, "ltx_equation"] || # === "ltx_eqn_table" &],
+      tex = Select[Map[Function[tr, StringRiffle[Select[iDocWebMathTeX /@
+          Cases[tr, x_XMLElement /; iDocWebTag[x] === "math", Infinity], # =!= "" &], " "]], trs], # =!= "" &];
+      label = FirstCase[e, (XMLElement[_, a_, xc_] /; MemberQ[iDocWebClasses[a], "ltx_tag_equation"]) :>
+        iDocWebFlatText[xc, ctx], "", Infinity];
+      If[tex =!= {},
+        Sow[<|"type" -> "display_math", "latex" -> StringRiffle[tex, " \\\\ "], "label" -> StringTrim[label]|>, "block"]];
+      Return[Null]];
+    If[trs === {} || Max[Length[cellsOf[#]] & /@ trs] <= 1 ||
+       Cases[c, x_XMLElement /; iDocWebTag[x] === "table", Infinity] =!= {} ||
+       Length[Cases[c, x_XMLElement /; MemberQ[{"p", "h1", "h2", "h3", "pre"}, iDocWebTag[x]], Infinity]] >= 3,
+      Scan[iDocWebEmit[#[[3]], ctx] &, Flatten[cellsOf /@ trs]];
+      Return[Null]];
+    rows = Map[Function[tr, StringReplace[iDocWebFlatText[#[[3]], ctx], "\n" -> " "] & /@ cellsOf[tr]], trs];
+    rows = Select[rows, # =!= {} && AnyTrue[#, # =!= "" &] &];
+    cap = FirstCase[c, x_XMLElement /; iDocWebTag[x] === "caption" :> iDocWebFlatText[x[[3]], ctx], ""];
+    If[rows =!= {}, Sow[<|"type" -> "table", "rows" -> rows, "caption" -> StringReplace[cap, "\n" -> " "]|>, "block"]]];
+
+(* figure: 中の画像・表にキャプション (figcaption) を付ける。どちらも無ければキャプションだけ段落に *)
+iDocWebFigure[XMLElement[_, _, c_List], ctx_] :=
+  Module[{capEl, cap, blocks, idx},
+    capEl = SelectFirst[c, MatchQ[#, _XMLElement] && iDocWebTag[#] === "figcaption" &, None];
+    cap = If[capEl === None, "", StringReplace[iDocWebFlatText[capEl[[3]], ctx], "\n" -> " "]];
+    blocks = iDocWebReapBlocks[iDocWebEmit[DeleteCases[c, x_ /; x === capEl], ctx]];
+    idx = Flatten[Position[Lookup[blocks, "type", {}], "image" | "table", {1}]];
+    Which[
+      cap === "", Null,
+      idx =!= {}, blocks[[Last[idx], "caption"]] = cap,
+      True, AppendTo[blocks, <|"type" -> "caption", "text" -> cap|>]];
+    Scan[Sow[#, "block"] &, blocks]];
+
+(* 参考文献: 訳さない。見出しがあればそれを使う *)
+iDocWebReferences[e:XMLElement[_, _, c_List], ctx_] :=
+  Module[{head, items},
+    head = FirstCase[e, x_XMLElement /; iDocWebHeadingTagQ[iDocWebTag[x]] :> iDocWebFlatText[x[[3]], ctx], "", Infinity];
+    items = Cases[e, x_XMLElement /; iDocWebTag[x] === "li" :> iDocWebFlatText[x[[3]], ctx], Infinity];
+    If[items === {},
+      items = Lookup[Select[iDocWebReapBlocks[iDocWebEmit[c, ctx]], MemberQ[{"paragraph", "item"}, #["type"]] &], "text", {}]];
+    items = Select[StringReplace[items, "\n" -> " "], # =!= "" && # =!= head &];
+    If[items =!= {},
+      Sow[<|"type" -> "references", "heading" -> StringReplace[head, "\n" -> " "], "items" -> items|>, "block"]]];
+
+iDocWebTextLen[blocks_List] := Total[StringLength /@ Select[Lookup[blocks, "text", ""], StringQ]];
+
+iDocWebPlainBlocks[plain_String, mathMode_] :=
+  Map[<|"type" -> "paragraph", "text" -> iDocWebEscape[iDocWebCleanInline[#], mathMode]|> &,
+    Select[StringSplit[StringReplace[plain, {"\r\n" -> "\n", "\r" -> "\n"}], RegularExpression["\\n[ \\t]*\\n"]],
+      StringTrim[#] =!= "" &]];
+
+iDocWebParseHTML[file_String, baseOpt_] :=
+  Module[{x, metas, meta, pageURL, baseHref, resBase, title, mathMode, bodyPos, body, bodyLen, main, blocks, desc, plain},
+    x = Quiet[Import[file, {"HTML", "XMLObject"}]];
+    If[! MatchQ[x, XMLObject[_][___]], Return[$Failed]];
+    metas = Cases[x, (XMLElement[t_, a_, _] /; iDocWebTagName[t] === "meta") :> a, Infinity];
+    meta = Function[name, SelectFirst[Map[Function[a,
+        If[ToLowerCase[iDocWebAttr[a, "property"]] === name || ToLowerCase[iDocWebAttr[a, "name"]] === name,
+          StringTrim[iDocWebAttr[a, "content"]], ""]], metas], # =!= "" &, ""]];
+    pageURL = Which[
+      StringQ[baseOpt] && StringMatchQ[baseOpt, RegularExpression["(?i)https?://.+"]], baseOpt,
+      meta["og:url"] =!= "", meta["og:url"],
+      True, FirstCase[x, (XMLElement[t_, a_, _] /; iDocWebTagName[t] === "link" &&
+        ToLowerCase[iDocWebAttr[a, "rel"]] === "canonical") :> iDocWebAttr[a, "href"], "", Infinity]];
+    baseHref = FirstCase[x, (XMLElement[t_, a_, _] /; iDocWebTagName[t] === "base") :> iDocWebAttr[a, "href"], "", Infinity];
+    resBase = If[StringTrim[baseHref] =!= "", iDocWebResolveURL[pageURL, baseHref], pageURL];
+    title = If[meta["og:title"] =!= "", meta["og:title"],
+      FirstCase[x, (XMLElement[t_, _, c_] /; iDocWebTagName[t] === "title") :>
+        StringTrim[StringReplace[iDocWebRawText[c], WhitespaceCharacter .. -> " "]], "", Infinity]];
+    mathMode = iDocWebMathJaxQ[x];
+    (* HTML の Import は壊れた入れ子で html の下に {head, body, head, body} を作ることがある
+       (theconversation.com: 本文は 2 つ目の body)。入れ子でない body をすべてつなぐ *)
+    bodyPos = Position[x, e_XMLElement /; iDocWebTag[e] === "body"];
+    bodyPos = Select[bodyPos, Function[p, ! AnyTrue[bodyPos, # =!= p && Length[#] < Length[p] && Take[p, Length[#]] === # &]]];
+    body = Which[
+      bodyPos === {}, FirstCase[x, _XMLElement, None, Infinity],
+      Length[bodyPos] === 1, Extract[x, First[bodyPos]],
+      True, XMLElement["body", {}, Join @@ Map[Extract[x, #][[3]] &, bodyPos]]];
+    If[body === None, Return[$Failed]];
+    body = iDocWebPre[body];
+    bodyLen = iDocWebLen[body];
+    main = iDocWebMain[iDocWebPrune[body, bodyLen]];
+    blocks = iDocWebReapBlocks[iDocWebBlock[main,
+      <|"Base" -> resBase, "MathMode" -> mathMode, "ParaType" -> "paragraph", "TotalLen" -> iDocWebLen[main]|>]];
+    (* 本文がほとんど取れない (JavaScript で描くページ等): 説明文 → 全文のプレーンテキスト *)
+    If[iDocWebTextLen[blocks] < 200,
+      desc = If[meta["og:description"] =!= "", meta["og:description"], meta["description"]];
+      If[desc =!= "", AppendTo[blocks, <|"type" -> "paragraph", "text" -> iDocWebEscape[desc, mathMode]|>]]];
+    If[iDocWebTextLen[blocks] < 80,
+      plain = Quiet[Import[file, "Plaintext"]];
+      If[StringQ[plain], blocks = Join[blocks, iDocWebPlainBlocks[plain, mathMode]]]];
+    <|"Title" -> title, "BaseURL" -> pageURL, "Blocks" -> blocks, "MathMode" -> mathMode|>];
+
+(* テキスト / Markdown: 見出し (#)・箇条書き (- * + 1.)・コード (```)・段落 (空行区切り) *)
+iDocWebJoinLines[lines_List] :=
+  Fold[Function[{acc, ln},
+    Which[
+      acc === "", ln,
+      ln === "", acc,
+      (* 日本語・中国語の行の継ぎ目には空白を入れない *)
+      First[ToCharacterCode[StringTake[acc, -1]]] >= 12288 || First[ToCharacterCode[StringTake[ln, 1]]] >= 12288, acc <> ln,
+      True, acc <> " " <> ln]], "", lines];
+
+iDocWebParseText[file_String, fmt_String] :=
+  Module[{txt, mathMode, blocks = {}, para = {}, inCode = False, code = {}, flush, md = (fmt === "markdown"), indent, rest},
+    txt = Quiet[Import[file, "Text", CharacterEncoding -> "UTF-8"]];
+    If[! StringQ[txt], Return[$Failed]];
+    txt = StringReplace[txt, {"\r\n" -> "\n", "\r" -> "\n"}];
+    mathMode = StringContainsQ[txt, "$$" | "\\(" | "\\["];
+    flush[] := (
+      If[para =!= {}, AppendTo[blocks, <|"type" -> "paragraph",
+        "text" -> iDocWebEscape[If[md, iDocWebJoinLines[para], StringRiffle[para, "\n"]], mathMode]|>]];
+      para = {});
+    Do[
+      indent = StringLength[ln] - StringLength[StringReplace[ln, StartOfString ~~ (" " | "\t") .. -> ""]];
+      rest = StringTrim[ln];
+      Which[
+        md && StringStartsQ[rest, "```"],
+          If[inCode,
+            AppendTo[blocks, <|"type" -> "code", "text" -> StringRiffle[code, "\n"]|>]; code = {}; inCode = False,
+            flush[]; inCode = True],
+        inCode, AppendTo[code, ln],
+        rest === "", flush[],
+        md && StringMatchQ[rest, RegularExpression["#{1,6}\\s+.*"]],
+          flush[];
+          AppendTo[blocks, <|"type" -> "heading",
+            "tagLevel" -> StringLength[rest] - StringLength[StringReplace[rest, StartOfString ~~ "#" .. -> ""]],
+            "text" -> iDocWebEscape[StringTrim[StringReplace[rest, StartOfString ~~ "#" .. -> ""]], mathMode]|>],
+        md && StringMatchQ[rest, RegularExpression["([-*+]|\\d+[.)])\\s+.*"]],
+          flush[];
+          AppendTo[blocks, <|"type" -> "item", "level" -> Min[2, Floor[indent / 2]],
+            "ordered" -> StringMatchQ[rest, RegularExpression["\\d+[.)].*"]],
+            "text" -> iDocWebEscape[StringTrim[StringReplace[rest, RegularExpression["^([-*+]|\\d+[.)])\\s+"] -> ""]], mathMode]|>],
+        True, AppendTo[para, rest]],
+      {ln, StringSplit[txt, "\n", All]}];
+    If[inCode && code =!= {}, AppendTo[blocks, <|"type" -> "code", "text" -> StringRiffle[code, "\n"]|>]];
+    flush[];
+    <|"Title" -> FileBaseName[file], "BaseURL" -> "", "Blocks" -> blocks, "MathMode" -> mathMode|>];
+
+iDocWebNormalizeBlock[b_Association] :=
+  Join[<|"text" -> "", "translation" -> "", "caption" -> "", "captionTranslation" -> "", "rowsTranslation" -> None,
+    "Image" -> None, "level" -> 1, "ordered" -> False, "latex" -> "", "label" -> "", "src" -> "", "alt" -> "",
+    "rows" -> {}, "items" -> {}, "heading" -> ""|>, b];
+
+(* 題の照合用: 空白・記号を除いて小文字に *)
+iDocWebTitleKey[s_String] := ToLowerCase[StringDelete[s, Except[LetterCharacter | DigitCharacter]]];
+(* 見出しがページの題 (<title> / og:title) と同じものを指すか: 包含するか、先頭が十分長く一致する
+   (<title> は "記事名 | サイト名" や途中で "..." と切られていることがある) *)
+iDocWebSameTitleQ[h_String, t_String] :=
+  Module[{a = iDocWebTitleKey[h], b = iDocWebTitleKey[t]},
+    If[StringLength[a] < 4 || StringLength[b] < 4, Return[False]];
+    StringContainsQ[b, a] || StringContainsQ[a, b] ||
+      StringLength[iDocWebCommonPrefix[a, b]] >= Min[12, Ceiling[0.6 Min[StringLength[a], StringLength[b]]]]];
+iDocWebCommonPrefix[a_String, b_String] :=
+  Module[{k = 0, n = Min[StringLength[a], StringLength[b]]},
+    While[k < n && StringTake[a, {k + 1}] === StringTake[b, {k + 1}], k++];
+    StringTake[a, k]];
+
+(* 仕上げ: 連続する重複を除き、題を決め、見出しの深さを揃える。
+   題 = 先頭近く (8 ブロック以内) の h1/h2 のうちページの題と同じもの。ページの題が無ければ最初の h1、
+   どれも合わなければページの題を先頭に置く (カテゴリ名の h1 などは見出しのまま残る) *)
+iDocWebFinalizeBlocks[blocksIn_List, title_String] :=
+  Module[{blocks = Select[blocksIn, AssociationQ], t = StringTrim[title], cand, levels, base},
+    blocks = First /@ Split[blocks, #1["type"] === #2["type"] && Lookup[#1, "text", 1] === Lookup[#2, "text", 2] &];
+    cand = FirstPosition[Take[blocks, UpTo[8]],
+      b_ /; b["type"] === "heading" && If[t === "", b["tagLevel"] === 1, b["tagLevel"] <= 2 && iDocWebSameTitleQ[b["text"], t]],
+      None, {1}];
+    Which[
+      cand =!= None, blocks[[cand[[1]]]] = <|"type" -> "title", "text" -> blocks[[cand[[1]], "text"]]|>,
+      t =!= "", PrependTo[blocks, <|"type" -> "title", "text" -> t|>]];
+    levels = Cases[blocks, b_ /; b["type"] === "heading" :> b["tagLevel"]];
+    base = If[levels === {}, 1, Min[levels]];
+    blocks = Map[If[#["type"] === "heading", Append[#, "level" -> Clip[#["tagLevel"] - base + 1, {1, 3}]], #] &, blocks];
+    Map[iDocWebNormalizeBlock, blocks]];
+
+iDocWebLanguageSample[blocks_List] :=
+  StringTake[StringRiffle[Lookup[Select[blocks, MemberQ[{"title", "heading", "paragraph", "quote", "item", "caption"}, #["type"]] &],
+    "text", {}], "\n"], UpTo[8000]];
+
+iDocWebDefaultDirective[lang_String] :=
+  If[StringMatchQ[lang, "Japanese", IgnoreCase -> True],
+    "Web ページの文章なので、内容に正確で自然な日本語に翻訳する (文体は原文の調子に合わせる)",
+    "Translate faithfully into natural, readable " <> iDocLangPromptName[lang] <> "; keep the tone of the original."];
+
+(* ---- 翻訳: 項目を JSON でまとめて渡す (1 回 6000 字 / 40 項目まで) ---- *)
+$iDocWebTranslatable = {"title", "heading", "paragraph", "quote", "item", "caption"};
+
+iDocWebJSON[expr_] := ByteArrayToString[ExportByteArray[expr, "RawJSON", "Compact" -> True], "UTF-8"];
+
+iDocWebHasLettersQ[s_String] := StringContainsQ[s, LetterCharacter];
+iDocWebHasLettersQ[_] := False;
+
+(* 文字の多い表だけ訳す (数値の表は訳さない) *)
+iDocWebTextTableQ[rows_List] :=
+  Module[{s = StringJoin[Flatten[rows]], nL, nAll},
+    nL = StringCount[s, LetterCharacter];
+    nAll = StringLength[StringDelete[s, WhitespaceCharacter]];
+    nL >= 20 && nAll > 0 && nL >= 0.3 nAll];
+
+iDocWebItemSize[it_Association] :=
+  10 + If[KeyExistsQ[it, "rows"], Total[StringLength /@ Flatten[it["rows"]]], StringLength[it["text"]]];
+
+iDocWebBatches[items_List, maxChars_Integer, maxN_Integer] :=
+  Module[{out = {}, cur = {}, n = 0, size},
+    Do[
+      size = iDocWebItemSize[it];
+      If[cur =!= {} && (n + size > maxChars || Length[cur] >= maxN), AppendTo[out, cur]; cur = {}; n = 0];
+      AppendTo[cur, it]; n += size,
+      {it, items}];
+    If[cur =!= {}, AppendTo[out, cur]];
+    out];
+
+iDocWebTranslatePrompt[items_List, cfg_Association] :=
+  Module[{lang = iDocLangPromptName[cfg["TargetLanguage"]]},
+    StringJoin[
+      "Translate the items of a web page into ", lang,
+      If[cfg["SourceLanguage"] =!= "", " (the page is written in " <> iDocLangPromptName[cfg["SourceLanguage"]] <> ")", ""], ".\n",
+      "Return ONLY a JSON object {\"items\": [{\"id\": \"...\", \"text\": \"...\"}, ...]} with exactly one entry per input item and the same ids. ",
+      "For an input item that has \"rows\" (a table), return \"rows\" instead of \"text\", with exactly the same number of rows and cells.\n",
+      "Rules:\n",
+      "  - Translate faithfully and completely. Do not summarize, merge, split, reorder or drop items.\n",
+      "  - Keep inline LaTeX between $...$, code between backticks `...`, escaped dollar signs \\$, URLs, numbers, ",
+      "citation markers like [3], and names of people and products unchanged.\n",
+      "  - Keep the line breaks inside an item.\n",
+      "  - If an item is already in ", lang, ", return it unchanged.\n",
+      "  - Output valid JSON only (escape backslashes and quotes). No markdown fences, no comments.\n",
+      If[StringTrim[cfg["Directive"]] =!= "", "Translation directive: " <> cfg["Directive"] <> "\n", ""],
+      iDocPaperDictionaryPrompt[cfg["Dictionary"]],
+      "\nItems (JSON):\n", iDocWebJSON[items]]];
+
+(* 応答 → <|id -> 訳文 | 訳した行列|>。表は行数・セル数が一致したものだけ採る *)
+iDocWebParseTranslations[parsed_, items_List] :=
+  Module[{arr, byId = Association[Map[#["id"] -> # &, items]], out = <||>},
+    arr = Which[
+      AssociationQ[parsed], Lookup[parsed, "items", Lookup[parsed, "translations", {}]],
+      ListQ[parsed], parsed,
+      True, Return[$Failed, Module]];
+    If[! ListQ[arr], Return[$Failed]];
+    Do[
+      If[AssociationQ[e],
+        With[{id = iDocPaperStr[Lookup[e, "id", ""]]},
+          With[{src = Lookup[byId, id, None]},
+            Which[
+              src === None, Null,
+              KeyExistsQ[src, "rows"],
+                With[{r = Lookup[e, "rows", None]},
+                  If[ListQ[r] && AllTrue[r, ListQ] && Map[Length, r] === Map[Length, src["rows"]],
+                    out[id] = Map[iDocPaperStr, r, {2}]]],
+              True,
+                With[{t = iDocPaperStr[Lookup[e, "text", ""]]}, If[StringTrim[t] =!= "", out[id] = t]]]]]],
+      {e, arr}];
+    out];
+
+iDocWebTranslateBatch[items_List, cfg_Association] :=
+  Module[{prompt = iDocWebTranslatePrompt[items, cfg], resp, map},
+    resp = iDocPaperQuery[{prompt}, cfg];
+    map = If[StringQ[resp], iDocWebParseTranslations[iDocPaperParseJSON[resp], items], $Failed];
+    If[(! AssociationQ[map] || Length[map] < Length[items] / 2) && ! iDocPaperConnectionErrorQ[$iDocPaperLastError],
+      iDocPaperLog[cfg["Verbose"], "翻訳の応答を読めません。JSON のみで再依頼します。"];
+      resp = iDocPaperQuery[{prompt <> "\n\nYour previous answer was not valid JSON or missed items. Return the complete JSON object only."}, cfg];
+      With[{m2 = If[StringQ[resp], iDocWebParseTranslations[iDocPaperParseJSON[resp], items], $Failed]},
+        If[AssociationQ[m2] && (! AssociationQ[map] || Length[m2] > Length[map]), map = m2]]];
+    If[AssociationQ[map], map, $Failed]];
+
+(* 返り値: {訳を入れたブロック列, 訳せなかった項目数}。接続失敗が 2 回続いたら $Failed *)
+iDocWebTranslateBlocks[blocks_List, cfg_Association] :=
+  Module[{items = {}, refs = {}, k = 0, add, batches, out = blocks, nFail = 0, connFail = 0, res, ids},
+    add = Function[{item, i, field}, k++;
+      AppendTo[items, Append[item, "id" -> ("t" <> ToString[k])]]; AppendTo[refs, {"t" <> ToString[k], i, field}]];
+    Do[
+      With[{b = blocks[[i]]},
+        If[MemberQ[$iDocWebTranslatable, b["type"]] && iDocWebHasLettersQ[b["text"]],
+          add[<|"text" -> b["text"]|>, i, "translation"]];
+        If[MemberQ[{"image", "table"}, b["type"]] && iDocWebHasLettersQ[b["caption"]],
+          add[<|"text" -> b["caption"]|>, i, "captionTranslation"]];
+        If[b["type"] === "table" && iDocWebTextTableQ[b["rows"]],
+          add[<|"rows" -> b["rows"]|>, i, "rowsTranslation"]]],
+      {i, Length[blocks]}];
+    If[items === {}, Return[{blocks, 0}]];
+    batches = iDocWebBatches[items, 6000, 40];
+    iDocPaperLog[cfg["Verbose"], ToString[Length[items]] <> " 項目を " <> ToString[Length[batches]] <> " 回に分けて翻訳中 (" <>
+      If[cfg["SourceLanguage"] =!= "", cfg["SourceLanguage"] <> " → ", ""] <> cfg["TargetLanguage"] <> ")..."];
+    Do[
+      iDocPaperLog[cfg["Verbose"], "翻訳 " <> ToString[j] <> "/" <> ToString[Length[batches]] <> " ..."];
+      res = iDocWebTranslateBatch[batches[[j]], cfg];
+      ids = Lookup[batches[[j]], "id"];
+      If[AssociationQ[res],
+        connFail = 0;
+        Scan[Function[r,
+            With[{v = Lookup[res, r[[1]], Missing[]]}, If[MissingQ[v], nFail++, out[[r[[2]], r[[3]]]] = v]]],
+          Select[refs, MemberQ[ids, #[[1]]] &]],
+        nFail += Length[ids];
+        connFail = If[iDocPaperConnectionErrorQ[$iDocPaperLastError], connFail + 1, 0];
+        If[connFail >= 2,
+          Message[DocImportPaper::abort, connFail, StringTake[$iDocPaperLastError, UpTo[300]]];
+          Return[$Failed, Module]]],
+      {j, Length[batches]}];
+    {out, nFail}];
+
+(* ---- 画像の取得 (PNG / JPEG / GIF / WebP / BMP。SVG は Import できたときだけ) ---- *)
+iDocWebFetchImage[src_String] :=
+  Module[{bytes = $Failed, ct = "", resp, fmt, img},
+    Which[
+      StringStartsQ[src, "data:image/", IgnoreCase -> True] && StringContainsQ[src, ";base64,"],
+        ct = ToLowerCase[First[StringSplit[StringDrop[src, 5], ";"]]];
+        bytes = Quiet[Check[BaseDecode[Last[StringSplit[src, ";base64,", 2]]], $Failed]],
+      StringMatchQ[src, RegularExpression["(?i)https?://.+"]],
+        resp = Quiet[URLRead[HTTPRequest[src, <|"Headers" -> {"User-Agent" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}|>],
+          {"StatusCode", "ContentType", "BodyByteArray"}, TimeConstraint -> 20]];
+        If[AssociationQ[resp] && resp["StatusCode"] === 200,
+          bytes = resp["BodyByteArray"];
+          ct = ToLowerCase[iDocPaperStr[resp["ContentType"]]]],
+      True, Null];
+    If[! ByteArrayQ[bytes] || Length[bytes] < 64 || Length[bytes] > 15 10^6, Return[$Failed]];
+    If[StringContainsQ[ct, "html"], Return[$Failed]];
+    fmt = Which[
+      StringContainsQ[ct, "png"], "PNG",
+      StringContainsQ[ct, "jpeg" | "jpg"], "JPEG",
+      StringContainsQ[ct, "gif"], "GIF",
+      StringContainsQ[ct, "webp"], "WebP",
+      StringContainsQ[ct, "bmp"], "BMP",
+      StringContainsQ[ct, "svg"], "SVG",
+      True, Automatic];
+    img = Quiet[Check[If[fmt === Automatic, ImportByteArray[bytes], ImportByteArray[bytes, fmt]], $Failed]];
+    If[ListQ[img] && img =!= {}, img = First[img]];
+    If[! ImageQ[img], Return[$Failed]];
+    If[Max[ImageDimensions[img]] < 24, Return[$Failed]];
+    If[First[ImageDimensions[img]] > 900, img = ImageResize[img, 900]];
+    img];
+
+iDocWebFetchImages[blocks_List, cfg_Association, maxN_Integer] :=
+  Module[{idx = Flatten[Position[Lookup[blocks, "type"], "image", {1}]], out = blocks, todo},
+    todo = Take[idx, UpTo[maxN]];
+    If[todo === {}, Return[blocks]];
+    iDocPaperLog[cfg["Verbose"], "画像 " <> ToString[Length[todo]] <> " 枚を取得中" <>
+      If[Length[idx] > maxN, " (" <> ToString[Length[idx]] <> " 枚中。残りはリンク)", ""] <> "..."];
+    Scan[(out[[#, "Image"]] = iDocWebFetchImage[out[[#, "src"]]]) &, todo];
+    out];
+
+(* ---- ブロック → セル ---- *)
+(* セルの文字列: `code` は等幅、$...$ はインライン数式、\$ はドル記号に戻す *)
+iDocWebTextData[s_String] :=
+  Module[{t = StringReplace[s, "\\$" -> "\:e000"], parts},
+    parts = StringSplit[t, "`" ~~ Shortest[c__] ~~ "`" :> iDocWebCodeTag[c]];
+    parts = Flatten[Map[
+      If[MatchQ[#, iDocWebCodeTag[_]], {StyleBox[First[#], FontFamily -> "Courier New"]},
+        Replace[DocPaperTextToTextData[#], {TextData[l_List] :> l, x_ :> {x}}]] &, parts], 1];
+    parts = DeleteCases[parts /. str_String :> StringReplace[str, "\:e000" -> "$"], ""];
+    Which[
+      parts === {}, "",
+      Length[parts] === 1 && StringQ[First[parts]], First[parts],
+      True, TextData[parts]]];
+
+iDocWebUnescape[s_String] := StringReplace[s, {"\\$" -> "$", "`" -> ""}];
+
+iDocWebTextCell[b_Association, file_String, style_String, extraRules_List] :=
+  Module[{text = StringTrim[b["text"]], tr = StringTrim[Lookup[b, "translation", ""]], content, rules, cellOpts},
+    If[tr =!= "" && tr =!= text,
+      content = iDocWebTextData[tr];
+      rules = Join[{"mode" -> "translated", "translation" -> tr, "translationSrc" -> text,
+        "showTranslation" -> True, "cleanText" -> tr}, extraRules];
+      cellOpts = $iDocTranslationCellOpts,
+      content = iDocWebTextData[text];
+      rules = Join[{"cleanText" -> text}, extraRules];
+      cellOpts = {}];
+    rules = Join[rules, {"refSources" -> {{file, All}}, "paperType" -> b["type"]}];
+    Cell[content, style, Sequence @@ cellOpts, iDocPaperTags[rules]]];
+
+iDocWebItemStyle[b_Association] :=
+  {{"Item", "Subitem", "Subsubitem"}, {"ItemNumbered", "SubitemNumbered", "SubsubitemNumbered"}}[[
+    If[TrueQ[b["ordered"]], 2, 1], Clip[b["level"], {0, 2}] + 1]];
+
+iDocWebHyperlink[url_String] := ButtonBox[url, BaseStyle -> "Hyperlink", ButtonData -> {URL[url], None}, ButtonNote -> url];
+
+iDocWebSourceCell[url_String, file_String, cfg_Association] :=
+  Cell[TextData[Flatten[{iL["出典: ", "Source: "],
+      If[StringStartsQ[url, "http"], iDocWebHyperlink[url], FileNameTake[file]],
+      "  (" <> iDocPaperTranslateNote[cfg] <> ")"}]], "Text",
+    iDocPaperTags[{"paperType" -> "source", "refSources" -> {{file, All}}}]];
+
+iDocWebDisplayMathCell[b_Association, file_String] :=
+  Module[{latex = StringTrim[b["latex"]], label = StringTrim[b["label"]], boxes, rules},
+    rules = {"paperLatex" -> latex, "paperLabel" -> If[label === "", None, label],
+      "refSources" -> {{file, All}}, "paperType" -> "display_math"};
+    boxes = DocPaperTeXToBoxes[latex];
+    If[boxes =!= $Failed,
+      Cell[BoxData[FormBox[If[label === "", boxes, RowBox[{boxes, "      ", label}]], TraditionalForm]],
+        "DisplayFormula", iDocPaperTags[rules]],
+      Cell[latex <> If[label === "", "", "    " <> label], "Text", FontFamily -> "Courier New", iDocPaperTags[rules]]]];
+
+iDocWebCaptionCell[b_Association, file_String, key_String] :=
+  iDocWebTextCell[<|"type" -> "caption", "text" -> b["caption"], "translation" -> b["captionTranslation"]|>,
+    file, "Text", {"paperCaptionFor" -> key}];
+
+iDocWebImageCells[b_Association, file_String, key_String] :=
+  Module[{img = b["Image"], cap = StringTrim[b["caption"]], src = b["src"], link, rules},
+    link = StringStartsQ[src, "http"];
+    rules = {"figLabel" -> key,
+      "figCaption" -> If[cap === "", None,
+        StringReplace[iDocPaperPlainMath[StringReplace[cap, "\\$" -> "\:e000"]], "\:e000" -> "$"]],
+      "refSources" -> {{file, All}}, "paperType" -> "figure", "paperImageURL" -> If[link, src, None]};
+    Join[
+      {If[ImageQ[img],
+        Cell[BoxData[ToBoxes[img]], "Text", iDocPaperTags[rules]],
+        Cell[TextData[Flatten[{"[" <> iL["画像", "Image"] <> If[b["alt"] =!= "", ": " <> b["alt"], ""] <> "]",
+            If[link, {" ", iDocWebHyperlink[src]}, {}]}]], "Text", iDocPaperTags[rules]]]},
+      If[cap === "", {}, {iDocWebCaptionCell[b, file, key]}]]];
+
+iDocWebTableCells[b_Association, file_String, key_String] :=
+  Module[{rows = b["rows"], tr = b["rowsTranslation"], shown, ncol, widths, rules},
+    shown = If[ListQ[tr], tr, rows];
+    ncol = Max[Length /@ shown];
+    shown = Map[iDocWebUnescape, PadRight[#, ncol, ""] & /@ shown, {2}];
+    widths = Table[If[Max[StringLength /@ shown[[All, j]]] > 40, 24, Automatic], {j, ncol}];
+    rules = {"figLabel" -> key, "refSources" -> {{file, All}}, "paperType" -> "table",
+      "paperTableSrc" -> If[ListQ[tr], rows, None]};
+    Join[
+      If[StringTrim[b["caption"]] === "", {}, {iDocWebCaptionCell[b, file, key]}],
+      {Cell[BoxData[ToBoxes[Grid[shown, Frame -> All, FrameStyle -> GrayLevel[0.75], Alignment -> {Left, Top},
+          Spacings -> {1, 0.6}, ItemSize -> {widths, Automatic}, Background -> {None, {1 -> GrayLevel[0.94]}}]]],
+        "Text", iDocPaperTags[rules]]}]];
+
+iDocWebReferenceCells[b_Association, file_String] :=
+  {Cell[If[StringTrim[b["heading"]] =!= "", iDocWebUnescape[b["heading"]], "References"], "Subsection",
+     iDocPaperTags[{"refSources" -> {{file, All}}, "paperType" -> "heading"}]],
+   Cell[StringRiffle[iDocWebUnescape /@ b["items"], "\n"], "Text",
+     iDocPaperTags[{"refSources" -> {{file, All}}, "paperType" -> "references"}]]};
+
+iDocWebBlocksToCells[blocks_List, file_String, url_String, cfg_Association] :=
+  Module[{cells = {}, styles = cfg["HeadingStyles"], refs = {}, fig = 0, tab = 0, srcDone = False},
+    Do[
+      Switch[b["type"],
+        "title",
+          AppendTo[cells, iDocWebTextCell[b, file, styles[[1]], {}]];
+          If[! srcDone, AppendTo[cells, iDocWebSourceCell[url, file, cfg]]; srcDone = True],
+        "heading", AppendTo[cells, iDocWebTextCell[b, file, styles[[Clip[b["level"], {1, 3}] + 1]], {}]],
+        "item", AppendTo[cells, iDocWebTextCell[b, file, iDocWebItemStyle[b], {}]],
+        "code", AppendTo[cells, Cell[b["text"], "Program", iDocPaperTags[{"paperType" -> "code", "refSources" -> {{file, All}}}]]],
+        "display_math", AppendTo[cells, iDocWebDisplayMathCell[b, file]],
+        "image", fig++; cells = Join[cells, iDocWebImageCells[b, file, "fig" <> ToString[fig]]],
+        "table", tab++; cells = Join[cells, iDocWebTableCells[b, file, "table" <> ToString[tab]]],
+        "references", AppendTo[refs, b],
+        _, If[StringTrim[b["text"]] =!= "", AppendTo[cells, iDocWebTextCell[b, file, "Text", {}]]]],
+      {b, blocks}];
+    If[! srcDone, PrependTo[cells, iDocWebSourceCell[url, file, cfg]]];
+    Join[cells, Flatten[Map[iDocWebReferenceCells[#, file] &, refs], 1]]];
+
+(* 第二部 (計算の再構成) に渡す本文 *)
+iDocWebBodyText[blocks_List] :=
+  StringRiffle[Map[Switch[#["type"],
+      "title", "# " <> #["text"],
+      "heading", StringRepeat["#", Clip[#["level"] + 1, {2, 4}]] <> " " <> #["text"],
+      "display_math", "$$ " <> #["latex"] <> " $$ " <> #["label"],
+      "code", "```\n" <> #["text"] <> "\n```",
+      "paragraph" | "quote" | "item" | "caption", #["text"],
+      _, Nothing] &, blocks], "\n\n"];
+
+DocImportWebPage[fileIn_String, opts:OptionsPattern[]] :=
+  Module[{file, fmt, wget, cfg, doc, title, url, blocks, tr, nFail = 0, cells, comp, nbExpr, outPath, t0 = AbsoluteTime[]},
+    file = AbsoluteFileName[fileIn];
+    If[! StringQ[file] || ! FileExistsQ[file], Message[DocImportWebPage::nofile, fileIn]; Return[$Failed]];
+    fmt = iDocWebFormat[file];
+    If[fmt === None, Message[DocImportWebPage::format, file]; Return[$Failed]];
+    wget = Function[name, Lookup[Join[Flatten[{opts}], Options[DocImportWebPage]], name]];
+    cfg = iDocPaperConfig[{opts}, Options[DocImportWebPage]];
+    If[! StringQ[wget["Directive"]], cfg["Directive"] = iDocWebDefaultDirective[cfg["TargetLanguage"]]];
+    doc = If[fmt === "html", iDocWebParseHTML[file, wget["BaseURL"]], iDocWebParseText[file, fmt]];
+    If[! AssociationQ[doc], Message[DocImportWebPage::empty, file]; Return[$Failed]];
+    title = With[{t = wget["Title"]}, If[StringQ[t] && StringTrim[t] =!= "", StringTrim[t], doc["Title"]]];
+    url = With[{u = wget["BaseURL"]}, If[StringQ[u] && StringTrim[u] =!= "", StringTrim[u], doc["BaseURL"]]];
+    blocks = iDocWebFinalizeBlocks[doc["Blocks"], iDocWebEscape[title, doc["MathMode"]]];
+    If[Count[blocks, b_ /; b["type"] =!= "title"] === 0, Message[DocImportWebPage::empty, file]; Return[$Failed]];
+    cfg = iDocPaperResolveTranslate[cfg, iDocWebLanguageSample[blocks]];
+    iDocPaperLog[cfg["Verbose"], FileNameTake[file] <> ": " <> ToString[Length[blocks]] <> " ブロック (" <>
+      iDocPaperTranslateNote[cfg] <> ")"];
+    $DocPaperLastAnalysis = <|"Source" -> file, "URL" -> url, "Kind" -> "web", "Pages" -> {},
+      "SourceLanguage" -> cfg["SourceLanguage"], "TargetLanguage" -> cfg["TargetLanguage"],
+      "Translated" -> cfg["Translate"], "FailedPages" -> {}, "FailedItems" -> 0|>;
+    If[TrueQ[cfg["Translate"]],
+      tr = iDocWebTranslateBlocks[blocks, cfg];
+      If[tr === $Failed,
+        iDocPaperLog[True, "LLM サーバに接続できません: " <> StringTake[$iDocPaperLastError, UpTo[300]]];
+        Return[$Failed]];
+      {blocks, nFail} = tr;
+      $DocPaperLastAnalysis["FailedItems"] = nFail;
+      If[nFail > 0, iDocPaperLog[True, "翻訳できなかった項目: " <> ToString[nFail] <> " (原文のまま残します)"]]];
+    If[TrueQ[wget["Images"]],
+      blocks = iDocWebFetchImages[blocks, cfg, Replace[wget["MaxImages"], Except[_Integer?NonNegative] -> 30]]];
+    $DocPaperLastAnalysis["Blocks"] = Map[KeyDrop[#, {"Image"}] &, blocks];
+    cells = iDocWebBlocksToCells[blocks, file, url, cfg];
+    If[TrueQ[cfg["Reconstruct"]],
+      comp = iDocPaperExtractComputationsImpl[iDocWebBodyText[blocks], cfg];
+      If[AssociationQ[comp],
+        cells = Join[cells, iDocPaperComputationCells[comp, file, cfg["TargetLanguage"]]],
+        iDocPaperLog[True, "計算の再構成に失敗しました (本文のみ出力します)。"]]];
+    cells = Join[iDocPaperMetaCells[cfg], cells];
+    $DocPaperLastAnalysis["Cells"] = Length[cells];
+    nbExpr = Notebook[cells,
+      WindowSize -> {900, 800},
+      TaggingRules -> {$iDocTagRoot -> {
+        "paperSource" -> If[url =!= "", url, file],
+        "paperFile" -> file,
+        "paperKind" -> "web",
+        "paperImportedAt" -> DateString["ISODateTime"],
+        "paperTargetLanguage" -> cfg["TargetLanguage"],
+        "paperSourceLanguage" -> cfg["SourceLanguage"],
+        "paperTranslated" -> TrueQ[cfg["Translate"]]}}];
+    outPath = iDocPaperOutputPath[file, cfg["OutputPath"]];
+    iDocPaperFinishNotebook[nbExpr, outPath, cfg, file, Length[cells], t0]];
+
+(* ============================================================
    パレット用アクション (documentation.wl のパレットから呼ばれる)
    ============================================================ *)
 
 iDocImportPaperAction[] :=
   Module[{path},
-    path = SystemDialogInput["FileOpen", {"", {iL["PDF ファイル", "PDF files"] -> {"*.pdf"}}},
-      WindowTitle -> iL["論文 PDF を選択", "Choose a paper PDF"]];
+    path = SystemDialogInput["FileOpen", {"", {iL["PDF ファイル", "PDF files"] -> {"*.pdf"},
+        iL["Web ページ (HTML)", "Web pages (HTML)"] -> {"*.html", "*.htm"}}},
+      WindowTitle -> iL["論文 PDF / Web ページを選択", "Choose a paper PDF or a web page"]];
     If[!StringQ[path] || !FileExistsQ[path], Return[$Canceled]];
     DocImportPaper[path, Fallback -> TrueQ[Quiet[ClaudeCode`GetPaletteFallback[]]]]];
 

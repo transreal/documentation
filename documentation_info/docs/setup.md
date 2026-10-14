@@ -39,9 +39,9 @@ macOS/Linux ではパス区切りやシェルコマンドを適宜読み替え�
 例: C:\Users\<ユーザー名>\Documents\WolframPackages\documentation.wl
 ```
 
-#### 論文 PDF 逆変換サブモジュール（任意）
+#### 論文 PDF・Web ページ逆変換サブモジュール（任意）
 
-論文 PDF をノートブックに逆変換する機能（`DocImportPaper` 等）を使う場合は、  
+論文 PDF や保存済みの Web ページをノートブックに逆変換する機能（`DocImportPaper`・`DocImportWebPage` 等）を使う場合は、  
 [https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb) から  
 `documentation_paper2nb.wl` を取得し、`documentation.wl` と同じ `$packageDirectory` に配置してください。
 
@@ -133,7 +133,7 @@ Block[{$CharacterEncoding = "UTF-8"},
 
 ## API キーの設定
 
-`documentation` パッケージの LLM 機能（アイデア展開・翻訳・計算・論文 PDF 逆変換）は  
+`documentation` パッケージの LLM 機能（アイデア展開・翻訳・計算・論文 PDF／Web ページ逆変換）は  
 `NBAccess` および `claudecode` 経由で Anthropic Claude API を呼び出します。  
 テキスト変換系の LLM 呼び出し（展開・翻訳・更新・分割など）は内部で「PlainText 応答契約」に統一されており、  
 応答が不正な形式の場合は 1 回だけ再問合せしたうえで型付き `Failure` を返します（利用者側での追加設定は不要です）。
@@ -202,6 +202,10 @@ LLM は生成コードを 1 つのコードブロックにまとめて出力し�
 処理には数分かかりカーネルを占有するため、実行中は他の操作を控えてください。  
 `documentation_paper2nb.wl` を配置していない場合、このボタンおよび関連機能は利用できません。
 
+`DocImportPaper` は、原文の言語を自動判定し、`"TargetLanguage"`（既定は `$Language`）と異なる場合にのみ翻訳します（`"Translate" -> Automatic`、既定）。原文がすでに目標言語であれば翻訳せず、構造化のみを行います。常に翻訳する場合は `"Translate" -> True`、翻訳しない場合は `"Translate" -> False` を指定してください。
+
+また、`DocImportPaper` には HTML・テキスト・Markdown ファイルのパスを渡すこともでき、その場合は `DocImportWebPage` に処理が委譲されます。SourceVault 取り込み済みの論文（`"src-..."`・`"sv://..."`・`"arxiv:..."`）を渡した場合は、元ソースの PrivacyLevel を継承して変換・登録されます。
+
 個別ページの構造解析や計算抽出を単独で試す場合は、以下の診断用関数を直接呼び出せます。
 
 ```mathematica
@@ -212,11 +216,43 @@ DocPaperAnalyzePage["C:/papers/example.pdf", 1]
 DocPaperExtractComputations["C:/papers/example.pdf"]
 ```
 
-直近の `DocImportPaper` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果（ブロック・セル構造など）は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
+直近の `DocImportPaper` / `DocImportWebPage` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果（ブロック・セル構造、原文言語 `SourceLanguage`・翻訳先言語 `TargetLanguage`・翻訳の有無 `Translated` など）は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
 
 また、LaTeX 数式文字列を TraditionalForm ボックスに変換する `DocPaperTeXToBoxes`、および `$...$` や `\(...\)` を含む文字列をインライン数式セル埋め込みの TextData に変換する `DocPaperTextToTextData` も公開されており、ノートブック編集スクリプト等から利用できます。
 
 `DocImportPaper` は、LLM サーバへの接続失敗（URL の設定誤りやサーバ停止など）が 2 ページ連続で発生すると、残りのページを空回りさせずに処理を中断します（`DocImportPaper::abort` メッセージが表示されます）。ローカル LLM サーバを使う場合は、事前にサーバが起動していることを確認してください。また、画像入力に対応しないモデル/サーバに接続した場合は、そのセッション中は以後のページで画像付き解析を自動的に省略し、テキストのみで解析を続行します。
+
+### Web ページ逆変換のテスト（documentation_paper2nb.wl 導入時のみ）
+
+保存済みの Web ページ（HTML / テキスト / Markdown）は `DocImportWebPage` で、論文 PDF と同じ規約のノートブックに変換できます。
+
+```mathematica
+DocImportWebPage["C:/clip/page.html", "BaseURL" -> "https://example.org/post"]
+```
+
+本文（article / main / 本文らしい要素）から見出し・段落・箇条書き・引用・コード・表・図・数式（MathML / LaTeXML の alttext / MathJax / KaTeX の TeX）を取り出します。LLM には構造解析をさせず、HTML の構造から決定的にブロックを抽出し、翻訳だけを LLM に依頼します。原文の言語が `"TargetLanguage"` と異なる場合のみ翻訳され、原文は TaggingRules の `translationSrc` に保持されます。
+
+主なオプション:
+
+| オプション | 説明 |
+|-----------|------|
+| `"BaseURL"` | ページの URL。画像・相対リンクの解決と出典表示に使用（`Automatic` は og:url / canonical） |
+| `"Title"` | ノートブックの題（`Automatic` で自動決定） |
+| `"Images"` | `True`（既定）で画像を取得して埋め込む。`False` なら取得せずリンクのみ |
+| `"MaxImages"` | 取得する画像の最大数（既定: 30） |
+| `"Reconstruct"` | `True` で第二部（計算の再構成）も実行（既定: `False`） |
+| `"Translate"` | `Automatic`（既定）/ `True` / `False` |
+
+そのほか `"TargetLanguage"`・`"OutputPath"`・`"Open"`・`"Save"`・`"CloudPublishable"`・`"Directive"`・`"Dictionary"`・`"HeadingStyles"`・`"Verbose"`・`Fallback`・`Model`・`Timeout` を指定できます。ファイルが見つからない場合・読めない形式の場合・本文を取り出せない場合は、それぞれ `DocImportWebPage::nofile`・`::format`・`::empty` が表示されます。
+
+テキストの言語を単独で判定したい場合は `DocPaperDetectLanguage` を使用できます。
+
+```mathematica
+DocPaperDetectLanguage["This is an English sentence."]
+(* "English"。判定できなければ Missing["Unknown"] *)
+```
+
+文字種（かな・漢字・ハングル・キリル文字等）で判定し、ラテン文字は英語の機能語の割合、それ以外は `LanguageIdentify` で判定します。
 
 ---
 
@@ -250,14 +286,16 @@ LaTeX プリアンブルは、pLaTeX/upLaTeX（`jsarticle` + `dvipdfmx`、Overle
 | 計算モードのセルに再度「計算」を適用できない | パレットの「×計算」でプロンプト状態に戻してから再実行する |
 | LaTeX エクスポートした図がページ全体に落ちて印刷で読めない | 図セルの `TaggingRules` に `documentation/figFullPage -> True` を設定し、独立ページの全ページ図として出力する |
 | LaTeX 出力で数式にすべきでない語が数式化された、または数式が地の文のままになった | 数式検出は決定的な規則で行われる。必要に応じて本文側で `$...$` を明示するか、`"MathFormat" -> True` を指定して LLM 整形を併用する |
-| コンソールに「documentation_paper2nb.wl が見つからないためスキップ」と表示される | 論文 PDF 逆変換機能を使わない場合は無視してよい。使う場合は `documentation_paper2nb.wl` を `$packageDirectory` に配置する |
+| コンソールに「documentation_paper2nb.wl が見つからないためスキップ」と表示される | 論文 PDF／Web ページ逆変換機能を使わない場合は無視してよい。使う場合は `documentation_paper2nb.wl` を `$packageDirectory` に配置する |
 | `DocImportPaper::abort` が表示され処理が中断する | LLM サーバへの接続失敗が 2 ページ連続で発生した状態。サーバの起動状況や URL 設定を確認してから再実行する |
+| 原文が目標言語と同じなのに翻訳されない、または翻訳したいのに翻訳されない | `"Translate" -> Automatic` は原文言語が `"TargetLanguage"` と異なるときだけ翻訳する。強制する場合は `"Translate" -> True` / `False` を指定する |
+| `DocImportWebPage::format` / `::empty` が表示される | HTML / テキスト / Markdown 以外の形式、または本文を抽出できないページ。保存した HTML の内容を確認する |
 
 ---
 
 ## 関連リンク
 
 - documentation リポジトリ: [https://github.com/transreal/documentation](https://github.com/transreal/documentation)
-- documentation_paper2nb リポジトリ（論文 PDF 逆変換サブモジュール）: [https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)
+- documentation_paper2nb リポジトリ（論文 PDF・Web ページ逆変換サブモジュール）: [https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)
 - NBAccess リポジトリ: [https://github.com/transreal/NBAccess](https://github.com/transreal/NBAccess)
 - claudecode リポジトリ: [https://github.com/transreal/claudecode](https://github.com/transreal/claudecode)

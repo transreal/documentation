@@ -13,7 +13,7 @@
 Options: Fallback -> False (True でフォールバック LLM を使用)
 
 ### DocToggleView[nb, cellIdx] → String | $Failed
-セルの表示モードを循環切替する。モード別動作: 通常セルはアイデア ↔ パラグラフ（→ 翻訳があれば翻訳へ）、mode="translated" セルは元テキスト ↔ 翻訳、mode="compute"/"computePrompt" セルはコード ↔ プロンプト、mode="figClean"/"figOutline" セルは手書き ↔ 清書済み図（`iDocToggleFigureClean` に委譲）。現在表示中の内容（編集済みでも）を保存してから切り替える。編集済みの場合（figClean/compute を除く）は他レイヤーをバックグラウンドで LLM 同期する（`iDocPostToggleSync`、切替前後の状態パターン別に4ケースで分岐: パラグラフ編集→翻訳更新、アイデア編集→パラグラフ再生成、翻訳表示中編集→元パラグラフ逆更新、translated セル元テキスト編集→翻訳更新）。Note/Dictionary/Directive セルは対象外。
+セルの表示モードを循環切替する。モード別動作: 通常セルはアイデア ↔ パラグラフ（→ 翻訳があれば翻訳へ）、mode="translated" セルは元テキスト ↔ 翻訳、mode="compute"/"computePrompt" セルはコード ↔ プロンプト、mode="figClean"/"figOutline" セルは手書き ↔ 清書済み図（`iDocToggleFigureClean` に委譲）。図の翻訳セル（mode="translated" で TaggingRules に figTranslationBoxes/figTranslationSrcBoxes を持つ）は原語図 ↔ 翻訳図を切り替える（`iDocToggleFigureTranslation` に委譲、テキスト編集検出は経由しない）。現在表示中の内容（編集済みでも）を保存してから切り替える。編集済みの場合（figClean/compute/図翻訳を除く）は他レイヤーをバックグラウンドで LLM 同期する（`iDocPostToggleSync`、切替前後の状態パターン別に4ケースで分岐: パラグラフ編集→翻訳更新、アイデア編集→パラグラフ再生成、翻訳表示中編集→元パラグラフ逆更新、translated セル元テキスト編集→翻訳更新）。Note/Dictionary/Directive セルは対象外。
 
 ### DocSplitCell[nb, cellIdx]
 カーソル位置でセルを前半・後半に分割する。パラグラフ/翻訳表示中は表示テキストと保存データを対応位置で分割し、プロンプトがあれば LLM で前半・後半用に再生成する。普通のセルはテキストを単純に分割する。
@@ -76,7 +76,7 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 ## メタデータ編集
 
 ### DocEditFigureMeta[nb, cellIdx]
-画像セルの図メタデータを編集するダイアログを表示する。ラベル（参照用キー）とキャプションを設定する。本文中で `<<fig:label>>` と記述するとエクスポート時に自動変換される。図セルの TaggingRules `documentation/figFullPage -> True` を設定すると LaTeX エクスポート時に独立ページ（`[p]`）の全ページ図になる（付録の図一覧など向け）。
+画像セルの図メタデータを編集するダイアログを表示する。ラベル（参照用キー）とキャプションを設定する。本文中で `<<fig:label>>` と記述するとエクスポート時に自動変換される。図セルの TaggingRules `documentation/figFullPage -> True` を設定すると LaTeX エクスポート時に独立ページ（`[p]`）の全ページ図になる（付録の図一覧など向け）。図の翻訳セルでは TaggingRules `documentation/figCaptionTranslation` に翻訳先言語のキャプションを保持し、エクスポート時に LLM 翻訳の代わりに使われる。
 
 ### DocEditRefSources[nb, cellIdx]
 セルの依存資料を編集する。アタッチされた PDF のうちそのセルの内容生成に使われた資料と参照ページ番号を設定する。LaTeX+Math エクスポート時に該当ページのみを LLM に送付してトークン消費を削減する。

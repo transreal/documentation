@@ -1,6 +1,6 @@
 # documentation — 設計思想と実装の概要
 
-Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。翻訳辞書・LLM 指示・文献管理・図の引用、Markdown・LaTeX・MS-Word へのエクスポート（試験的）、そして論文 PDF からノートブックへの逆変換（サブモジュール）など、執筆から出版まで一貫したワークフローを提供します。
+Mathematica ノートブック上でアイデアメモから文章品質のパラグラフを生成するドキュメント作成支援パッケージです。翻訳辞書・LLM 指示・文献管理・図の引用、Markdown・LaTeX・MS-Word へのエクスポート（試験的）、そして論文 PDF や Web ページからノートブックへの逆変換（サブモジュール）など、執筆から出版まで一貫したワークフローを提供します。
 
 ## 設計思想と実装の概要
 
@@ -69,15 +69,19 @@ Directive や Dictionary の内容をノートブック全体に反映したい�
 
 **Directive セル**にはノートブック全体の LLM 指示（文体・表記ルール等）を記載でき、すべての展開・翻訳・同期・計算・修正・更新操作に自動適用されます。**Dictionary セル**は翻訳時の用語対応を管理し、技術用語や固有名詞を一貫した訳語に統一します。これらのメタセルはエクスポート対象外であり、最終出力には含まれません。
 
-#### 論文 PDF のノートブック変換（逆変換）*(サブモジュール)*
+#### 論文 PDF・Web ページのノートブック変換（逆変換）*(サブモジュール)*
 
 `documentation_paper2nb` サブモジュールを `$packageDirectory` に配置すると（`documentation.wl` 末尾で自動ロード）、順変換（ノートブック → Markdown/LaTeX/Word）とは逆方向に、**論文 PDF をドキュメント規約のノートブックへ変換**できます。第一部で見出し階層・段落（翻訳と原文を保持、`DocToggleView` で切替可能）・インライン数式・別行立て数式（LaTeX→box 変換に失敗した場合はページ画像を切り出し）・図表とキャプション・参考文献を復元し、第二部で論文中の計算・アルゴリズムを実行可能な Wolfram Language 定義として再構成します（生成コードは自動評価されません）。
 
-`DocImportPaper[pdfPath]` で実行するほか、パレットの「← 論文PDF」ボタンからも呼び出せます。ローカル PDF パスに加え、**SourceVault に取り込み済みの論文を参照文字列（`src-...` / `sv://...` / `arxiv:...`）で指定して変換**することもできます（[SourceVault](https://github.com/transreal/SourceVault) パッケージがロードされている場合のみ有効で、未ロード時はローカル PDF パスとして扱われます）。
+`DocImportPaper[pdfPath]` で実行するほか、パレットの「← 論文PDF」ボタンからも呼び出せます。ローカル PDF パスに加え、**SourceVault に取り込み済みの論文を参照文字列（`src-...` / `sv://...` / `arxiv:...` / `http(s)://` URL）で指定して変換**することもできます（[SourceVault](https://github.com/transreal/SourceVault) パッケージがロードされている場合のみ有効で、未ロード時はローカルパスとして扱われます）。取り込み元の PrivacyLevel は変換結果に継承されます。
 
-変換の挙動は各種オプションで制御できます。ページ範囲（`"Pages"`）、第二部の実行有無（`"Reconstruct"`）、別行立て数式の扱い（`"MathMode"`: 自動 / 常に画像 / 常にテキスト）、ページ画像を LLM に送るかどうか（`"Vision"`）とそのタイムアウト（`"VisionTimeout"`、ローカルプロバイダでは自動的に長めに設定）、生成ノートブックの `CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などが指定できます。画像入力に対応しないモデル／サーバに接続した場合は自動的にテキストのみの解析へフォールバックし、LLM サーバへの接続失敗が 2 ページ連続で発生した場合は残りのページを空回りさせずに処理を中断します。
+**翻訳は原文の言語を自動判定して行います**。`"Translate" -> Automatic`（既定）では、原文の言語が `"TargetLanguage"`（既定は `$Language`）と異なる場合にのみ翻訳し、原文がすでに目標言語であれば翻訳せず構造化のみを行います。常に翻訳する（`True`）、翻訳しない（`False`）も指定できます。
 
-個別ページの構造解析（`DocPaperAnalyzePage`）や計算抽出のみの実行（`DocPaperExtractComputations`）も単独で呼び出せます。直近の処理の中間結果は `$DocPaperLastAnalysis` に保持されます。非公開原稿はローカル LLM プロバイダの使用を推奨します。詳細は [`api_paper2nb.md`](api_paper2nb.md) を参照してください。
+また、保存済みの **Web ページ（HTML / テキスト / Markdown）** も `DocImportWebPage` で同じ規約のノートブック（見出し・段落・箇条書き・表・図・数式つき）に変換できます。PDF と異なり、構造は HTML から決定的に抽出し、LLM は翻訳のみを担当します。`DocImportPaper` にローカルの `.html` / `.htm` / `.md` / `.txt` パスを渡した場合も自動的に委譲されます。
+
+変換の挙動は各種オプションで制御できます。ページ範囲（`"Pages"`）、翻訳の有無と対象言語（`"Translate"` / `"TargetLanguage"`）、第二部の実行有無（`"Reconstruct"`）、別行立て数式の扱い（`"MathMode"`: 自動 / 常に画像 / 常にテキスト）、ページ画像を LLM に送るかどうか（`"Vision"`）とそのタイムアウト（`"VisionTimeout"`、ローカルプロバイダでは自動的に長めに設定）、生成ノートブックの `CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などが指定できます。画像入力に対応しないモデル／サーバに接続した場合は自動的にテキストのみの解析へフォールバックし、LLM サーバへの接続失敗が 2 ページ連続で発生した場合は残りのページを空回りさせずに処理を中断します。
+
+個別ページの構造解析（`DocPaperAnalyzePage`）や計算抽出のみの実行（`DocPaperExtractComputations`）も単独で呼び出せます。直近の処理の中間結果（原文言語・翻訳有無を含む）は `$DocPaperLastAnalysis` に保持されます。非公開原稿はローカル LLM プロバイダの使用を推奨します。詳細は [`api_paper2nb.md`](api_paper2nb.md) を参照してください。
 
 ### セル状態管理: TaggingRules による非破壊的なデータ保持
 
@@ -102,8 +106,8 @@ LLM の呼び出しはすべて非同期で実行され、カーネルをブロ�
 | Mathematica | 13.0 以上 |
 | OS | Windows 11（64-bit） |
 | 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess), [claudecode](https://github.com/transreal/claudecode) |
-| 依存パッケージ（任意） | [documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)（論文 PDF 逆変換機能 `DocImportPaper` を使う場合のみ）／[SourceVault](https://github.com/transreal/SourceVault)（取り込み済み論文を参照文字列で逆変換する場合のみ） |
-| 外部サービス | Anthropic Claude API（LLM 機能・図の清書／概念図生成・図の翻訳・論文 PDF 逆変換に必要）／LMStudio（ローカルモデル使用時・オプション）／OpenAI API（図の更新を画像生成 AI で行う場合・オプション） |
+| 依存パッケージ（任意） | [documentation_paper2nb](https://github.com/transreal/documentation_paper2nb)（論文 PDF・Web ページ逆変換機能 `DocImportPaper` / `DocImportWebPage` を使う場合のみ）／[SourceVault](https://github.com/transreal/SourceVault)（取り込み済み論文を参照文字列で逆変換する場合のみ） |
+| 外部サービス | Anthropic Claude API（LLM 機能・図の清書／概念図生成・図の翻訳・論文 PDF／Web ページ逆変換に必要）／LMStudio（ローカルモデル使用時・オプション）／OpenAI API（図の更新を画像生成 AI で行う場合・オプション） |
 | Pandoc | 2.0 以上（MS-Word 形式でのエクスポートに必要） |
 
 ### インストール
@@ -119,9 +123,9 @@ LLM の呼び出しはすべて非同期で実行され、カーネルをブロ�
 
 [https://github.com/transreal/documentation](https://github.com/transreal/documentation) から `documentation.wl` を取得し、`$packageDirectory` に配置します。
 
-##### 論文 PDF 逆変換サブモジュール（任意）
+##### 論文 PDF・Web ページ逆変換サブモジュール（任意）
 
-論文 PDF をノートブックに逆変換する機能（`DocImportPaper` 等）を使う場合は、[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb) から `documentation_paper2nb.wl` を取得し、`documentation.wl` と同じ `$packageDirectory` に配置してください。`documentation.wl` はロード時に `$packageDirectory` 内の `documentation_paper2nb.wl` を自動検出して読み込みます。配置しない場合はエラーにはならず、当該機能のみが無効化されます。
+論文 PDF や保存済み Web ページをノートブックに逆変換する機能（`DocImportPaper`・`DocImportWebPage` 等）を使う場合は、[https://github.com/transreal/documentation_paper2nb](https://github.com/transreal/documentation_paper2nb) から `documentation_paper2nb.wl` を取得し、`documentation.wl` と同じ `$packageDirectory` に配置してください。`documentation.wl` はロード時に `$packageDirectory` 内の `documentation_paper2nb.wl` を自動検出して読み込みます。配置しない場合はエラーにはならず、当該機能のみが無効化されます。
 
 SourceVault に取り込み済みの論文を参照文字列（`src-...` / `sv://...` / `arxiv:...`）から逆変換したい場合は、追加で [SourceVault](https://github.com/transreal/SourceVault) パッケージをロードしてください。
 
@@ -234,7 +238,8 @@ ShowDocPalette[]
 | **×清書** | 清書・生成した図を破棄して元の手書き図／テキストに戻す |
 | **セル分割** | カーソル位置でセルを前半・後半に分割（プロンプトがあれば前半・後半用に LLM で再生成） |
 | **セル合併** | 複数選択セルを 1 つに統合 |
-| **論文インポート（逆変換）** *(サブモジュール)* | PDF 形式の論文（またはSourceVault 参照文字列）を解析し、本文・数式・図表・参考文献・計算過程をノートブックのセルとして再構成。個別ページ解析（`DocPaperAnalyzePage`）・計算抽出のみ（`DocPaperExtractComputations`）も単独実行可能（`documentation_paper2nb` 導入時のみ） |
+| **論文インポート（逆変換）** *(サブモジュール)* | PDF 形式の論文（または SourceVault 参照文字列）を解析し、本文・数式・図表・参考文献・計算過程をノートブックのセルとして再構成。**原文の言語を自動判定し、目標言語と異なる場合のみ翻訳**。個別ページ解析（`DocPaperAnalyzePage`）・計算抽出のみ（`DocPaperExtractComputations`）も単独実行可能（`documentation_paper2nb` 導入時のみ） |
+| **Web ページインポート** *(サブモジュール)* | 保存済みの HTML / テキスト / Markdown を、見出し・段落・箇条書き・表・図・数式つきのノートブックに変換（`DocImportWebPage`。構造は決定的に抽出し、LLM は翻訳のみ担当。`documentation_paper2nb` 導入時のみ） |
 | **LMStudio 連携** | `$ClaudeModel` をリストに設定することで LMStudio のローカル LLM に切り替え可能 |
 
 #### セル種別
@@ -267,11 +272,11 @@ ShowDocPalette[]
 
 エクスポートのセル除外設定: パレットの「除外切替」ボタンで任意のセルをエクスポート対象外に設定・解除できます。Note・Directive・Dictionary・Bibliography セルは常にエクスポート対象外です。
 
-#### 論文インポート（逆変換）*(サブモジュール)*
+#### 論文・Web ページインポート（逆変換）*(サブモジュール)*
 
-`documentation_paper2nb` サブモジュール（`documentation_paper2nb.wl`）を導入すると、Markdown/LaTeX/Word エクスポートの逆方向に、論文 PDF をドキュメント規約のノートブックへ変換できます。`DocImportPaper[pdfPath]` またはパレットの「← 論文PDF」ボタンから実行します。SourceVault がロードされていれば、ローカル PDF パスの代わりに参照文字列（`src-...` / `sv://...` / `arxiv:...`）も指定できます。
+`documentation_paper2nb` サブモジュール（`documentation_paper2nb.wl`）を導入すると、Markdown/LaTeX/Word エクスポートの逆方向に、論文 PDF や Web ページをドキュメント規約のノートブックへ変換できます。`DocImportPaper[pdfPath]` またはパレットの「← 論文PDF」ボタンから実行します。SourceVault がロードされていれば、ローカル PDF パスの代わりに参照文字列（`src-...` / `sv://...` / `arxiv:...` / URL）も指定できます。HTML / テキスト / Markdown ファイルのパスを渡すと `DocImportWebPage` に委譲されます。
 
-主なオプションは、ページ範囲（`"Pages"`）、翻訳の有無と対象言語（`"Translate"` / `"TargetLanguage"`）、第二部（計算再構成）の実行（`"Reconstruct"`）、別行立て数式の扱い（`"MathMode"`）、ページ画像の LLM 送付とタイムアウト（`"Vision"` / `"VisionTimeout"`）、翻訳指示・用語辞書（`"Directive"` / `"Dictionary"`）、出力先と保存・オープン（`"OutputPath"` / `"Save"` / `"Open"`）、`CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などです。個別ページの構造解析は `DocPaperAnalyzePage`、計算抽出のみの実行は `DocPaperExtractComputations` で単独呼び出しできます。直近の処理の中間結果（ブロック・セル構造など）は `$DocPaperLastAnalysis` に保持されます。詳細は [`api_paper2nb.md`](api_paper2nb.md) を参照してください。
+主なオプションは、ページ範囲（`"Pages"`）、翻訳の有無と対象言語（`"Translate"`: `Automatic`（既定。原文言語が目標言語と異なる場合のみ翻訳）/ `True` / `False`、`"TargetLanguage"`）、第二部（計算再構成）の実行（`"Reconstruct"`）、ページ画像の解像度（`"ImageResolution"`）、別行立て数式の扱い（`"MathMode"`）、ページ画像の LLM 送付とタイムアウト（`"Vision"` / `"VisionTimeout"`）、翻訳指示・用語辞書（`"Directive"` / `"Dictionary"`）、出力先と保存・オープン（`"OutputPath"` / `"Save"` / `"Open"`）、`CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などです。個別ページの構造解析は `DocPaperAnalyzePage`、計算抽出のみの実行は `DocPaperExtractComputations` で単独呼び出しできます。直近の処理の中間結果（ブロック・セル構造、原文言語 `SourceLanguage`・翻訳有無 `Translated` など）は `$DocPaperLastAnalysis` に保持されます。詳細は [`api_paper2nb.md`](api_paper2nb.md) を参照してください。
 
 #### 関数一覧
 
@@ -297,7 +302,8 @@ ShowDocPalette[]
 | `DocExportMarkdown[nb, opts]` | Markdown エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
 | `DocExportLaTeX[nb, opts]` | LaTeX エクスポート（`"MathFormat" -> True` で数式の高再現度変換） |
 | `DocExportWord[nb, opts]` | MS-Word エクスポート（Pandoc 必要、`"ReferenceDoc" -> パス` でテンプレート指定） |
-| `DocImportPaper[pdfPath, opts]` | 論文 PDF（または SourceVault 参照文字列）をドキュメント規約のノートブックへ逆変換（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
+| `DocImportPaper[pdfPath, opts]` | 論文 PDF（または SourceVault 参照文字列・URL・HTML 等のローカルファイル）をドキュメント規約のノートブックへ逆変換。原文言語を自動判定し必要時のみ翻訳（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
+| `DocImportWebPage[path, opts]` | 保存済みの Web ページ（HTML / テキスト / Markdown）をノートブックへ変換。構造は決定的抽出、LLM は翻訳のみ担当（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
 | `DocPaperAnalyzePage[pdfPath, page, opts]` | 論文 PDF の指定ページを構造解析し、要素ブロックのリストを返す（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
 | `DocPaperExtractComputations[pdfPath, opts]` | 論文全文から再現可能な計算・アルゴリズムを抽出して Wolfram Language コードを生成（`documentation_paper2nb` 導入時のみ。詳細は `api_paper2nb.md`） |
 | `DocPaperTeXToBoxes[latex]` | LaTeX 数式文字列を TraditionalForm ボックスに変換するユーティリティ（`documentation_paper2nb` 導入時のみ） |
@@ -346,10 +352,10 @@ ShowDocPalette[]
 | ファイル | 内容 |
 |----------|------|
 | `api.md` | 全公開関数・変数のリファレンス、セルモードと TaggingRules 構造、エクスポートセルスタイルマッピングの詳細 |
-| `api_paper2nb.md` | 論文 PDF → ノートブック逆変換のリファレンス（`DocImportPaper`, `DocPaperAnalyzePage`, `DocPaperExtractComputations`, `DocPaperTeXToBoxes`, `DocPaperTextToTextData` と各オプション。`documentation_paper2nb` 導入時のみ有効） |
+| `api_paper2nb.md` | 論文 PDF・Web ページ → ノートブック逆変換のリファレンス（`DocImportPaper`, `DocImportWebPage`, `DocPaperAnalyzePage`, `DocPaperExtractComputations`, `DocPaperTeXToBoxes`, `DocPaperTextToTextData` と各オプション。`documentation_paper2nb` 導入時のみ有効） |
 | `user_manual.md` | ユーザーマニュアル、パレット操作ガイド、各関数の引数説明、LMStudio ローカルモデル設定手順、典型的なワークフロー |
 | `examples/example.md` | コード例集（パレット起動、展開、切替、翻訳設定、計算モード、複数セル操作、同期） |
-| `setup.md` | インストール手順、動作要件、Pandoc のインストール方法、論文 PDF 逆変換サブモジュールの配置、エクスポート時の図サイズ、トラブルシューティング |
+| `setup.md` | インストール手順、動作要件、Pandoc のインストール方法、論文 PDF・Web ページ逆変換サブモジュールの配置、エクスポート時の図サイズ、トラブルシューティング |
 
 ---
 
@@ -565,7 +571,7 @@ DocExportWord[EvaluationNotebook[], "ReferenceDoc" -> "template.docx"]
 DocImportPaper["C:/papers/original.pdf"]
 ```
 
-見出し・段落（翻訳＋原文保持）・数式・図表・参考文献を復元したノートブックが生成されます（第一部）。続けて、論文中の計算・アルゴリズムが実行可能な Wolfram Language コード（未評価の Input セル + 実行例）として再構成されます（第二部）。生成コードはパッケージ側では自動評価されません。非公開原稿を扱う場合はローカル LLM プロバイダの使用を推奨します。
+見出し・段落（必要に応じて翻訳＋原文保持）・数式・図表・参考文献を復元したノートブックが生成されます（第一部）。続けて、論文中の計算・アルゴリズムが実行可能な Wolfram Language コード（未評価の Input セル + 実行例）として再構成されます（第二部）。生成コードはパッケージ側では自動評価されません。非公開原稿を扱う場合はローカル LLM プロバイダの使用を推奨します。
 
 ```mathematica
 (* ページ範囲を指定し、第二部（計算再構成）を省略する例 *)
@@ -573,6 +579,9 @@ DocImportPaper["C:/papers/original.pdf", "Pages" -> 1 ;; 3, "Reconstruct" -> Fal
 
 (* 別行立て数式を常にページ画像から切り出し、ページ画像の LLM 送付を無効化する例 *)
 DocImportPaper["C:/papers/original.pdf", "MathMode" -> "Image", "Vision" -> False]
+
+(* 翻訳先言語を指定し、原文言語に関わらず常に翻訳する例（既定の Automatic は言語が異なる場合のみ翻訳） *)
+DocImportPaper["C:/papers/original.pdf", "TargetLanguage" -> "Japanese", "Translate" -> True]
 ```
 
 ### SourceVault に取り込み済みの論文を逆変換する
@@ -580,6 +589,16 @@ DocImportPaper["C:/papers/original.pdf", "MathMode" -> "Image", "Vision" -> Fals
 ```mathematica
 (* SourceVault パッケージがロードされている場合、参照文字列でも指定できます *)
 DocImportPaper["arxiv:2401.12345"]
+```
+
+### 保存済みの Web ページをノートブックへ変換する
+
+```mathematica
+(* HTML / テキスト / Markdown を、同じ規約のノートブックに変換 *)
+DocImportWebPage["C:/pages/article.html"]
+
+(* DocImportPaper にローカルの HTML パスを渡しても同じ処理に委譲されます *)
+DocImportPaper["C:/pages/article.html"]
 ```
 
 ### 個別ページを構造解析する（診断・部分再利用）
@@ -592,7 +611,7 @@ DocPaperAnalyzePage["C:/papers/example.pdf", 1]
 DocPaperExtractComputations["C:/papers/example.pdf"]
 ```
 
-直近の `DocImportPaper` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
+直近の `DocImportPaper` / `DocImportWebPage` / `DocPaperAnalyzePage` / `DocPaperExtractComputations` の中間結果は `$DocPaperLastAnalysis` に保持されます。デバッグや部分再利用に活用できます。
 
 ---
 
