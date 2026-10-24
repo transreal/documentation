@@ -79,7 +79,7 @@ Directive や Dictionary の内容をノートブック全体に反映したい�
 
 また、保存済みの **Web ページ（HTML / テキスト / Markdown）** も `DocImportWebPage` で同じ規約のノートブック（見出し・段落・箇条書き・表・図・数式つき）に変換できます。PDF と異なり、構造は HTML から決定的に抽出し、LLM は翻訳のみを担当します。`DocImportPaper` にローカルの `.html` / `.htm` / `.md` / `.txt` パスを渡した場合も自動的に委譲されます。
 
-変換の挙動は各種オプションで制御できます。ページ範囲（`"Pages"`）、翻訳の有無と対象言語（`"Translate"` / `"TargetLanguage"`）、第二部の実行有無（`"Reconstruct"`）、別行立て数式の扱い（`"MathMode"`: 自動 / 常に画像 / 常にテキスト）、ページ画像を LLM に送るかどうか（`"Vision"`）とそのタイムアウト（`"VisionTimeout"`、ローカルプロバイダでは自動的に長めに設定）、生成ノートブックの `CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などが指定できます。画像入力に対応しないモデル／サーバに接続した場合は自動的にテキストのみの解析へフォールバックし、LLM サーバへの接続失敗が 2 ページ連続で発生した場合は残りのページを空回りさせずに処理を中断します。
+変換の挙動は各種オプションで制御できます。ページ範囲（`"Pages"`）、翻訳の有無と対象言語（`"Translate"` / `"TargetLanguage"`）、第二部の実行有無（`"Reconstruct"`）、別行立て数式の扱い（`"MathMode"`: 自動 / 常に画像 / 常にテキスト）、ページ画像を LLM に送るかどうか（`"Vision"`）とそのタイムアウト（`"VisionTimeout"`、ローカルプロバイダでは自動的に長めに設定）、生成ノートブックの `CloudPublishable` 宣言（`"CloudPublishable"`、既定では付与しません）などが指定できます。画像入力に対応しないモデル／サーバに接続した場合は自動的にテキストのみの解析へフォールバックし、LLM サーバへの接続失敗が 2 ページ連続で発生した場合は残りのページを空回りさせずに処理を中断します（`DocImportPaper::abort`）。
 
 個別ページの構造解析（`DocPaperAnalyzePage`）や計算抽出のみの実行（`DocPaperExtractComputations`）も単独で呼び出せます。直近の処理の中間結果（原文言語・翻訳有無を含む）は `$DocPaperLastAnalysis` に保持されます。非公開原稿はローカル LLM プロバイダの使用を推奨します。詳細は [`api_paper2nb.md`](documentation_info/docs/api_paper2nb.md) を参照してください。
 

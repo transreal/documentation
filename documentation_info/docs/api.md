@@ -11,9 +11,11 @@
 指定セルのアイデアテキストを LLM でパラグラフに展開する。既にパラグラフ表示中なら現在のパラグラフを尊重しつつインプレース更新する。元のアイデアは TaggingRules に保存される。Bibliography セルがあれば引用候補コンテキストも自動収集してプロンプトに含める。Note/Dictionary/Directive セルは対象外。
 → $Failed（失敗時）
 Options: Fallback -> False (True でフォールバック LLM を使用)
+例: `DocExpandIdea[EvaluationNotebook[], 3]`
 
 ### DocToggleView[nb, cellIdx] → String | $Failed
 セルの表示モードを循環切替する。モード別動作: 通常セルはアイデア ↔ パラグラフ（→ 翻訳があれば翻訳へ）、mode="translated" セルは元テキスト ↔ 翻訳、mode="compute"/"computePrompt" セルはコード ↔ プロンプト、mode="figClean"/"figOutline" セルは手書き ↔ 清書済み図（`iDocToggleFigureClean` に委譲）。図の翻訳セル（mode="translated" で TaggingRules に figTranslationBoxes/figTranslationSrcBoxes を持つ）は原語図 ↔ 翻訳図を切り替える（`iDocToggleFigureTranslation` に委譲、テキスト編集検出は経由しない）。現在表示中の内容（編集済みでも）を保存してから切り替える。編集済みの場合（figClean/compute/図翻訳を除く）は他レイヤーをバックグラウンドで LLM 同期する（`iDocPostToggleSync`、切替前後の状態パターン別に4ケースで分岐: パラグラフ編集→翻訳更新、アイデア編集→パラグラフ再生成、翻訳表示中編集→元パラグラフ逆更新、translated セル元テキスト編集→翻訳更新）。Note/Dictionary/Directive セルは対象外。
+例: `DocToggleView[EvaluationNotebook[], 5]`
 
 ### DocSplitCell[nb, cellIdx]
 カーソル位置でセルを前半・後半に分割する。パラグラフ/翻訳表示中は表示テキストと保存データを対応位置で分割し、プロンプトがあれば LLM で前半・後半用に再生成する。普通のセルはテキストを単純に分割する。
@@ -27,11 +29,13 @@ Options: Fallback -> False (True でフォールバック LLM を使用)
 選択セルのテキストを LLM で校正する。文法的・表現上の不自然さを最小限の修正で訂正し、元の意味・構成・文体・トーンを完全に保持する。Directive/Dictionary セルの指示は厳守する。翻訳付きセルの場合は翻訳も連鎖更新する。対象外: idea モード、compute モード、メタセル。
 → $Failed（失敗時）
 Options: Fallback -> False (True でフォールバック LLM を使用)
+例: `DocRefine[EvaluationNotebook[], 3]`
 
 ### DocPolish[nb, cellIdx, opts]
 選択セルのテキストを LLM でより完璧に書き直す。内容（情報・主旨・意図）は保持しつつ文の構成や言い回しを必要に応じて大きく変更する。Directive/Dictionary セルの指示は厳守する。翻訳付きセルの場合は翻訳も連鎖更新する。対象外: idea モード、compute モード、メタセル。
 → $Failed（失敗時）
 Options: Fallback -> False (True でフォールバック LLM を使用)
+例: `DocPolish[EvaluationNotebook[], 3]`
 
 ## 翻訳・同期
 

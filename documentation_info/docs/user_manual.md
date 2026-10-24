@@ -991,7 +991,7 @@ DocImportPaper["arxiv:2401.01234"]
    DocImportWebPage["C:/clip/page.html", "BaseURL" -> "https://example.org/post"]
    ```
 
-3. 本文（`article` / `main` / 本文らしい要素）から、見出し・段落・箇条書き・引用・コード・表・図・数式が取り出され、ノートブックのセルになる。画像は URL から取得して埋め込まれる
+3. 本文（`article` / `main` / 本文らしい要素）から、見出し・段落・箇条書き・引用・コード・表・図・数式が取り出され、ノートブックのセルになる。画像は URL から取得して埋め込まれる。本文の候補を選ぶ際の文字数は、`aside`・`script`・`style`・`noscript`・`template` の中身を除いて数えるため、Next.js などのようにハイドレーション用 JSON が `script` に大量に含まれるページでも、本文が候補から落とされにくくなっています
 
 4. 原文の言語が翻訳先言語（`$Language`）と異なる場合のみ、LLM で翻訳される（原文は保持され、**↔ 切替** で往復できる）。同じ言語なら構造化だけが行われる
 
@@ -1653,6 +1653,7 @@ DocImportPaper["arxiv:2401.01234"]
 保存済みの Web ページ（HTML / テキスト / Markdown）を、documentation 規約の翻訳ノートブックへ変換します。
 
 - 本文（`article` / `main` / 本文らしい要素）から、見出し・段落・箇条書き・引用・コード・表・図・数式（MathML / LaTeXML の `alttext` / MathJax / KaTeX の TeX）を取り出します
+- **本文候補の選び方**: 候補ごとの本文量は文字数で見積もります。このとき `aside`（補足・サイドバー）に加えて `script`・`style`・`noscript`・`template` の中身は数えません。Next.js などのハイドレーション用 JSON が `body` の大半を占めるページでも、本文側の割合が小さく見えて候補から落とされることがありません。また、本文量はブロックごとに文字数を合計して見積もります
 - LLM に構造解析はさせず、HTML の構造から決定的にブロックを取り出します。LLM は翻訳だけに使い、項目を JSON でまとめて渡します
 - 画像は URL から取得して埋め込みます（遅延読み込み用の `data-src` 等にも対応。アイコン・絵文字・バッジ・トラッキング画素は図にしません）
 - 原文の言語が `"TargetLanguage"`（`$Language`）と違えば LLM で翻訳します（原文は TaggingRules の `translationSrc` に保持、`mode = "translated"`）。同じ言語なら翻訳せず構造化だけを行います
@@ -1898,7 +1899,7 @@ $ClaudeLMStudioIntegrations = {"mcp/exa"}
 - 生成図は表示幅に上限（`$iDocFigureMaxWidth`、既定 760px）が掛かります。図の更新方式やスタイルは `Documentation`Private`$iDocFigurePolishMethod` ほかの設定変数で切り替えられます（「設定変数 › 図機能の設定変数」参照）。
 - **← 論文PDF（`DocImportPaper`）は PDF を解析してノートブックに逆変換する機能です。** 処理には数分かかることがあり、その間カーネルは占有されます。内部的には自動ロードされるサブモジュール documentation_paper2nb（[GitHub](https://github.com/transreal/documentation_paper2nb)）を使用します。変換精度は PDF のレイアウトに依存するため、変換後は内容の確認・手直しを行ってください。ローカル PDF パスの代わりに `"src-..."` / `"sv://..."` / `"arxiv:..."` の参照文字列を渡すと、SourceVault パッケージ経由で元ソースの PrivacyLevel を継承した変換が行われます（PL < 0.5 はクラウド経路 + `CloudPublishable` 宣言、PL >= 0.5 はローカルモデルのみ）。また、LLM サーバへの接続失敗が2ページ連続した場合は残りのページを処理せず中断します（`DocImportPaper::abort`）。画像入力に対応しないモデル／サーバを検出した場合は、以降のページ解析で画像付き試行を自動的に省略します。
 - **`DocImportPaper` / `DocImportWebPage` の `"Translate"` 既定値は `Automatic` です。** 原文の言語が翻訳先言語（`$Language`）と同じなら翻訳せず構造化だけを行い、違うときだけ翻訳します。常に翻訳したい場合は `"Translate" -> True`、翻訳したくない場合は `"Translate" -> False` を指定してください。
-- **`DocImportWebPage` は保存済みの HTML / テキスト / Markdown を変換します。** HTML の構造は決定的に解析され、LLM は翻訳にのみ使われます。画像は URL から取得して埋め込まれるため、相対リンクの解決には `"BaseURL"` の指定をお勧めします。
+- **`DocImportWebPage` は保存済みの HTML / テキスト / Markdown を変換します。** HTML の構造は決定的に解析され、LLM は翻訳にのみ使われます。画像は URL から取得して埋め込まれるため、相対リンクの解決には `"BaseURL"` の指定をお勧めします。本文候補の文字数見積もりでは `aside`・`script`・`style`・`noscript`・`template` の中身を数えないため、ハイドレーション用 JSON を大量に含むページでも本文が選ばれやすくなっています。
 - PDF の本文とページ画像は、パレットで選ばれている LLM プロバイダへ送られます。非公開の原稿を扱うときはローカルプロバイダ（lmstudio 等）を選んでください。
 - **展開・翻訳・更新・分割などのテキスト変換系 LLM 呼び出しは、常にプレーンテキスト応答を返す契約に統一されています。** これにより、内部形式の生テキストが誤ってパラグラフの一部として挿入されてしまう不具合が解消されています。
 - **LLM 呼び出しが失敗した場合、エラーメッセージには実際のエラー内容が併記されるようになりました。** 以前は「Error: Could not get LLM response.」という定型文のみでしたが、原因の切り分けがしやすくなっています。

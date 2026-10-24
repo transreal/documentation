@@ -232,6 +232,8 @@ DocImportWebPage["C:/clip/page.html", "BaseURL" -> "https://example.org/post"]
 
 本文（article / main / 本文らしい要素）から見出し・段落・箇条書き・引用・コード・表・図・数式（MathML / LaTeXML の alttext / MathJax / KaTeX の TeX）を取り出します。LLM には構造解析をさせず、HTML の構造から決定的にブロックを抽出し、翻訳だけを LLM に依頼します。原文の言語が `"TargetLanguage"` と異なる場合のみ翻訳され、原文は TaggingRules の `translationSrc` に保持されます。
 
+本文量の目安を測る際、`aside`・`script`・`style`・`noscript`・`template` の中身は数えません。Next.js など、ハイドレーション用 JSON によって body の大半が `script` になるページでも、本文側の割合が小さく見えて本文候補から落とされることはありません。また、ブロックごとの本文文字数は個別に集計されるため、ブロックが空の場合でも正しく扱われます。これらは内部の改善であり、利用者側での設定は不要です。
+
 主なオプション:
 
 | オプション | 説明 |

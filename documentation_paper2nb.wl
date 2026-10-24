@@ -1733,9 +1733,11 @@ iDocWebTokens[attrs_] := DeleteDuplicates[ToLowerCase /@
 
 iDocWebNum[s_String] := With[{d = StringCases[s, DigitCharacter ..]}, If[d === {}, 0, FromDigits[First[d]]]];
 
-(* 本文量の目安 (文字数)。aside は本文の候補選びでは数えない *)
+(* 本文量の目安 (文字数)。aside は本文の候補選びでは数えない。script / style 等の中身も数えない
+   (Next.js などはハイドレーション用 JSON で body の大半が script になり、本文側の割合が小さく見えて落とされる) *)
 iDocWebLen[s_String] := StringLength[StringTrim[s]];
-iDocWebLen[e:XMLElement[_, _, c_List]] := If[iDocWebTag[e] === "aside", 0, Total[iDocWebLen /@ c]];
+iDocWebLen[e:XMLElement[_, _, c_List]] :=
+  If[MemberQ[{"aside", "script", "style", "noscript", "template"}, iDocWebTag[e]], 0, Total[iDocWebLen /@ c]];
 iDocWebLen[_] := 0;
 
 (* pre 等の生テキスト (空白を保つ) *)
@@ -2083,7 +2085,8 @@ iDocWebReferences[e:XMLElement[_, _, c_List], ctx_] :=
     If[items =!= {},
       Sow[<|"type" -> "references", "heading" -> StringReplace[head, "\n" -> " "], "items" -> items|>, "block"]]];
 
-iDocWebTextLen[blocks_List] := Total[StringLength /@ Select[Lookup[blocks, "text", ""], StringQ]];
+(* Lookup[{}, "text", ""] は空リストを空の連想とみなして "" を返すので、ブロックごとに数える *)
+iDocWebTextLen[blocks_List] := Total[Cases[blocks, b_Association :> With[{t = Lookup[b, "text", ""]}, If[StringQ[t], StringLength[t], 0]]]];
 
 iDocWebPlainBlocks[plain_String, mathMode_] :=
   Map[<|"type" -> "paragraph", "text" -> iDocWebEscape[iDocWebCleanInline[#], mathMode]|> &,
